@@ -12,7 +12,9 @@ from freqtrade.configuration import TimeRange
 from freqtrade.constants import UNLIMITED_STAKE_AMOUNT, DATETIME_PRINT_FORMAT
 from freqtrade.exceptions import OperationalException
 from freqtrade.data.history import get_timerange, load_data, refresh_data
-from freqtrade.strategy.interface import SellType
+from freqtrade.strategy.interface import SellType, IStrategy
+
+from freqtrade.data.dataprovider import DataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,10 @@ class Edge:
         self.config = config
         self.exchange = exchange
         self.strategy = strategy
+
+        # Modified on 28/10/2020 for strategy load_pair_dataframe
+        dataprovider = DataProvider(self.config, self.exchange)
+        IStrategy.dp = dataprovider
 
         self.edge_config = self.config.get('edge', {})
         self._cached_pairs: Dict[str, Any] = {}  # Keeps a list of pairs

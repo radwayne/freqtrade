@@ -507,31 +507,6 @@ class IStrategy(ABC):
         current_profit = trade.calc_profit_ratio(current_rate)
         config_ask_strategy = self.config.get('ask_strategy', {})
 
-<<<<<<< HEAD
-        roi_reached = self.min_roi_reached(trade=trade, current_profit=current_profit,
-                                           current_time=date)
-
-        if stoplossflag.sell_flag:
-
-            # When backtesting, in the case of trailing_stop_loss,
-            # make sure we don't make a profit higher than ROI.
-            if stoplossflag.sell_type == SellType.TRAILING_STOP_LOSS and roi_reached:
-                logger.debug(f"{trade.pair} - Required profit reached. sell_flag=True, "
-                             f"sell_type=SellType.ROI")
-                return SellCheckTuple(sell_flag=True, sell_type=SellType.ROI)
-
-            logger.debug(f"{trade.pair} - Stoploss hit. sell_flag=True, "
-                         f"sell_type={stoplossflag.sell_type}")
-            return stoplossflag
-
-        if buy and config_ask_strategy.get('ignore_roi_if_buy_signal', False):
-            # This one is noisy, commented out
-            # logger.debug(f"{trade.pair} - Buy signal still active. sell_flag=False")
-            return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
-
-        # Check if minimal roi has been reached and no longer in buy conditions (avoiding a fee)
-        if roi_reached:
-=======
         # if buy signal and ignore_roi is set, we don't need to evaluate min_roi.
         roi_reached = (not (buy and config_ask_strategy.get('ignore_roi_if_buy_signal', False))
                        and self.min_roi_reached(trade=trade, current_profit=current_profit,
@@ -550,7 +525,6 @@ class IStrategy(ABC):
         # Sell-signal
         # Stoploss
         if roi_reached and stoplossflag.sell_type != SellType.STOP_LOSS:
->>>>>>> upstream/develop
             logger.debug(f"{trade.pair} - Required profit reached. sell_flag=True, "
                          f"sell_type=SellType.ROI")
             return SellCheckTuple(sell_flag=True, sell_type=SellType.ROI)
@@ -636,18 +610,28 @@ class IStrategy(ABC):
 
         return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
 
-    def min_roi_reached_entry(self, trade_dur: int) -> Tuple[Optional[int], Optional[float]]:
+    def min_roi_reached_entry(self, trade: Trade, trade_dur: int) -> Tuple[Optional[int], Optional[float]]:
         """
         Based on trade duration defines the ROI entry that may have been reached.
         :param trade_dur: trade duration in minutes
         :return: minimal ROI entry value or None if none proper ROI entry was found.
         """
+        # dynamic_roi edit
+        if self.config.get('dynamic_roi', False):
+            ref_price = self.config.get('ref_price', 15000) # get_ref_price(trade.pair)
+            price_ratio = trade.open_rate / ref_price
+            dyn_roi_list = list(filter(lambda x: x <= price_ratio, self.dynamic_roi.keys()))
+            dyn_roi_entry = max(dyn_roi_list)
+            minimal_roi = self.dynamic_roi[dyn_roi_entry]
+        else:
+            minimal_roi = self.minimal_roi
+
         # Get highest entry in ROI dict where key <= trade-duration
-        roi_list = list(filter(lambda x: x <= trade_dur, self.minimal_roi.keys()))
+        roi_list = list(filter(lambda x: x <= trade_dur, minimal_roi.keys()))
         if not roi_list:
             return None, None
         roi_entry = max(roi_list)
-        return roi_entry, self.minimal_roi[roi_entry]
+        return roi_entry, minimal_roi[roi_entry]
 
     def min_roi_reached(self, trade: Trade, current_profit: float, current_time: datetime) -> bool:
         """
@@ -658,7 +642,7 @@ class IStrategy(ABC):
         """
         # Check if time matches and current rate is above threshold
         trade_dur = int((current_time.timestamp() - trade.open_date.timestamp()) // 60)
-        _, roi = self.min_roi_reached_entry(trade_dur)
+        _, roi = self.min_roi_reached_entry(trade, trade_dur)
         if roi is None:
             return False
         else:

@@ -139,6 +139,13 @@ class StrategyResolver(IResolver):
             strategy.minimal_roi = OrderedDict(sorted(
                 {int(key): value for (key, value) in strategy.minimal_roi.items()}.items(),
                 key=lambda t: t[0]))
+
+        # dynamic_roi edit
+        if hasattr(strategy, 'dynamic_roi'):
+            strategy.dynamic_roi = OrderedDict(sorted(
+                {float(key): {0:value} for (key, value) in strategy.dynamic_roi.items()}.items(),
+                key=lambda t: t[0]))
+
         if hasattr(strategy, 'stoploss'):
             strategy.stoploss = float(strategy.stoploss)
         return strategy

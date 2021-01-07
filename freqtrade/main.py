@@ -7,9 +7,10 @@ import logging
 import sys
 from typing import Any, List
 
+
 # check min. python version
-if sys.version_info < (3, 6):
-    sys.exit("Freqtrade requires Python version >= 3.6")
+if sys.version_info < (3, 7):
+    sys.exit("Freqtrade requires Python version >= 3.7")
 
 from freqtrade.commands import Arguments
 from freqtrade.exceptions import FreqtradeException, OperationalException

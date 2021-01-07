@@ -6,7 +6,8 @@ import pytest
 
 from freqtrade.constants import AVAILABLE_PAIRLISTS
 from freqtrade.exceptions import OperationalException
-from freqtrade.pairlist.pairlistmanager import PairListManager
+from freqtrade.plugins.pairlist.pairlist_helpers import expand_pairlist
+from freqtrade.plugins.pairlistmanager import PairListManager
 from freqtrade.resolvers import PairListResolver
 from tests.conftest import get_patched_freqtradebot, log_has, log_has_re
 
@@ -58,7 +59,7 @@ def whitelist_conf_2(default_conf):
 
 
 @pytest.fixture(scope="function")
-def whitelist_conf_3(default_conf):
+def whitelist_conf_agefilter(default_conf):
     default_conf['stake_currency'] = 'BTC'
     default_conf['exchange']['pair_whitelist'] = [
         'ETH/BTC', 'TKN/BTC', 'BLK/BTC', 'LTC/BTC',
@@ -92,7 +93,7 @@ def static_pl_conf(whitelist_conf):
     return whitelist_conf
 
 
-def test_log_on_refresh(mocker, static_pl_conf, markets, tickers):
+def test_log_cached(mocker, static_pl_conf, markets, tickers):
     mocker.patch.multiple('freqtrade.exchange.Exchange',
                           markets=PropertyMock(return_value=markets),
                           exchange_has=MagicMock(return_value=True),
@@ -102,14 +103,14 @@ def test_log_on_refresh(mocker, static_pl_conf, markets, tickers):
     logmock = MagicMock()
     # Assign starting whitelist
     pl = freqtrade.pairlists._pairlist_handlers[0]
-    pl.log_on_refresh(logmock, 'Hello world')
+    pl.log_once('Hello world', logmock)
     assert logmock.call_count == 1
-    pl.log_on_refresh(logmock, 'Hello world')
+    pl.log_once('Hello world', logmock)
     assert logmock.call_count == 1
     assert pl._log_cache.currsize == 1
     assert ('Hello world',) in pl._log_cache._Cache__data
 
-    pl.log_on_refresh(logmock, 'Hello world2')
+    pl.log_once('Hello world2', logmock)
     assert logmock.call_count == 2
     assert pl._log_cache.currsize == 2
 
@@ -155,6 +156,23 @@ def test_refresh_static_pairlist(mocker, markets, static_pl_conf):
     assert static_pl_conf['exchange']['pair_blacklist'] == freqtrade.pairlists.blacklist
 
 
+def test_invalid_blacklist(mocker, markets, static_pl_conf, caplog):
+    static_pl_conf['exchange']['pair_blacklist'] = ['*/BTC']
+    freqtrade = get_patched_freqtradebot(mocker, static_pl_conf)
+    mocker.patch.multiple(
+        'freqtrade.exchange.Exchange',
+        exchange_has=MagicMock(return_value=True),
+        markets=PropertyMock(return_value=markets),
+    )
+    freqtrade.pairlists.refresh_pairlist()
+    # List ordered by BaseVolume
+    whitelist = []
+    # Ensure all except those in whitelist are removed
+    assert set(whitelist) == set(freqtrade.pairlists.whitelist)
+    assert static_pl_conf['exchange']['pair_blacklist'] == freqtrade.pairlists.blacklist
+    log_has_re(r"Pair blacklist contains an invalid Wildcard.*", caplog)
+
+
 def test_refresh_pairlist_dynamic(mocker, shitcoinmarkets, tickers, whitelist_conf):
 
     mocker.patch.multiple(
@@ -190,7 +208,7 @@ def test_refresh_pairlist_dynamic_2(mocker, shitcoinmarkets, tickers, whitelist_
     )
     # Remove caching of ticker data to emulate changing volume by the time of second call
     mocker.patch.multiple(
-        'freqtrade.pairlist.pairlistmanager.PairListManager',
+        'freqtrade.plugins.pairlistmanager.PairListManager',
         _get_cached_tickers=MagicMock(return_value=tickers_dict),
     )
     freqtrade = get_patched_freqtradebot(mocker, whitelist_conf_2)
@@ -246,7 +264,7 @@ def test_VolumePairList_refresh_empty(mocker, markets_empty, whitelist_conf):
       {"method": "PrecisionFilter"},
       {"method": "PriceFilter", "low_price_ratio": 0.03},
       {"method": "SpreadFilter", "max_spread_ratio": 0.005},
-      {"method": "ShuffleFilter"}],
+      {"method": "ShuffleFilter"}, {"method": "PerformanceFilter"}],
      "ETH", []),
     # AgeFilter and VolumePairList (require 2 days only, all should pass age test)
     ([{"method": "VolumePairList", "number_assets": 5, "sort_key": "quoteVolume"},
@@ -326,6 +344,13 @@ def test_VolumePairList_refresh_empty(mocker, markets_empty, whitelist_conf):
     # ShuffleFilter only
     ([{"method": "ShuffleFilter", "seed": 42}],
      "BTC", 'filter_at_the_beginning'),  # OperationalException expected
+    # PerformanceFilter after StaticPairList
+    ([{"method": "StaticPairList"},
+      {"method": "PerformanceFilter"}],
+     "BTC", ['ETH/BTC', 'TKN/BTC', 'HOT/BTC']),
+    # PerformanceFilter only
+    ([{"method": "PerformanceFilter"}],
+     "BTC", 'filter_at_the_beginning'),  # OperationalException expected
     # SpreadFilter after StaticPairList
     ([{"method": "StaticPairList"},
       {"method": "SpreadFilter", "max_spread_ratio": 0.005}],
@@ -340,12 +365,24 @@ def test_VolumePairList_refresh_empty(mocker, markets_empty, whitelist_conf):
     ([{"method": "VolumePairList", "number_assets": 20, "sort_key": "quoteVolume"},
       {"method": "PriceFilter", "low_price_ratio": 0.02}],
         "USDT", ['ETH/USDT', 'NANO/USDT']),
+    ([{"method": "StaticPairList"},
+      {"method": "RangeStabilityFilter", "lookback_days": 10,
+       "min_rate_of_change": 0.01, "refresh_period": 1440}],
+     "BTC", ['ETH/BTC', 'TKN/BTC', 'HOT/BTC']),
 ])
 def test_VolumePairList_whitelist_gen(mocker, whitelist_conf, shitcoinmarkets, tickers,
-                                      ohlcv_history_list, pairlists, base_currency,
+                                      ohlcv_history, pairlists, base_currency,
                                       whitelist_result, caplog) -> None:
     whitelist_conf['pairlists'] = pairlists
     whitelist_conf['stake_currency'] = base_currency
+
+    ohlcv_data = {
+        ('ETH/BTC', '1d'): ohlcv_history,
+        ('TKN/BTC', '1d'): ohlcv_history,
+        ('LTC/BTC', '1d'): ohlcv_history,
+        ('XRP/BTC', '1d'): ohlcv_history,
+        ('HOT/BTC', '1d'): ohlcv_history,
+    }
 
     mocker.patch('freqtrade.exchange.Exchange.exchange_has', MagicMock(return_value=True))
 
@@ -363,8 +400,13 @@ def test_VolumePairList_whitelist_gen(mocker, whitelist_conf, shitcoinmarkets, t
                           )
     mocker.patch.multiple(
         'freqtrade.exchange.Exchange',
-        get_historic_ohlcv=MagicMock(return_value=ohlcv_history_list),
+        refresh_latest_ohlcv=MagicMock(return_value=ohlcv_data),
     )
+
+    # Provide for PerformanceFilter's dependency
+    mocker.patch.multiple('freqtrade.persistence.Trade',
+                          get_overall_performance=MagicMock(return_value=[])
+                          )
 
     # Set whitelist_result to None if pairlist is invalid and should produce exception
     if whitelist_result == 'filter_at_the_beginning':
@@ -386,7 +428,7 @@ def test_VolumePairList_whitelist_gen(mocker, whitelist_conf, shitcoinmarkets, t
 
         for pairlist in pairlists:
             if pairlist['method'] == 'AgeFilter' and pairlist['min_days_listed'] and \
-                    len(ohlcv_history_list) <= pairlist['min_days_listed']:
+                    len(ohlcv_history) <= pairlist['min_days_listed']:
                 assert log_has_re(r'^Removed .* from whitelist, because age .* is less than '
                                   r'.* day.*', caplog)
             if pairlist['method'] == 'PrecisionFilter' and whitelist_result:
@@ -409,7 +451,7 @@ def test_VolumePairList_whitelist_gen(mocker, whitelist_conf, shitcoinmarkets, t
                     assert not log_has(logmsg, caplog)
 
 
-def test_PrecisionFilter_error(mocker, whitelist_conf, tickers) -> None:
+def test_PrecisionFilter_error(mocker, whitelist_conf) -> None:
     whitelist_conf['pairlists'] = [{"method": "StaticPairList"}, {"method": "PrecisionFilter"}]
     del whitelist_conf['stoploss']
 
@@ -482,7 +524,7 @@ def test__whitelist_for_active_markets(mocker, whitelist_conf, markets, pairlist
 
 
 @pytest.mark.parametrize("pairlist", AVAILABLE_PAIRLISTS)
-def test__whitelist_for_active_markets_empty(mocker, whitelist_conf, markets, pairlist, tickers):
+def test__whitelist_for_active_markets_empty(mocker, whitelist_conf, pairlist, tickers):
     whitelist_conf['pairlists'][0]['method'] = pairlist
 
     mocker.patch('freqtrade.exchange.Exchange.exchange_has', return_value=True)
@@ -498,7 +540,7 @@ def test__whitelist_for_active_markets_empty(mocker, whitelist_conf, markets, pa
         pairlist_handler._whitelist_for_active_markets(['ETH/BTC'])
 
 
-def test_volumepairlist_invalid_sortvalue(mocker, markets, whitelist_conf):
+def test_volumepairlist_invalid_sortvalue(mocker, whitelist_conf):
     whitelist_conf['pairlists'][0].update({"sort_key": "asdf"})
 
     mocker.patch('freqtrade.exchange.Exchange.exchange_has', MagicMock(return_value=True))
@@ -528,7 +570,7 @@ def test_volumepairlist_caching(mocker, markets, whitelist_conf, tickers):
     assert freqtrade.pairlists._pairlist_handlers[0]._last_refresh == lrf
 
 
-def test_agefilter_min_days_listed_too_small(mocker, default_conf, markets, tickers, caplog):
+def test_agefilter_min_days_listed_too_small(mocker, default_conf, markets, tickers):
     default_conf['pairlists'] = [{'method': 'VolumePairList', 'number_assets': 10},
                                  {'method': 'AgeFilter', 'min_days_listed': -1}]
 
@@ -543,7 +585,7 @@ def test_agefilter_min_days_listed_too_small(mocker, default_conf, markets, tick
         get_patched_freqtradebot(mocker, default_conf)
 
 
-def test_agefilter_min_days_listed_too_large(mocker, default_conf, markets, tickers, caplog):
+def test_agefilter_min_days_listed_too_large(mocker, default_conf, markets, tickers):
     default_conf['pairlists'] = [{'method': 'VolumePairList', 'number_assets': 10},
                                  {'method': 'AgeFilter', 'min_days_listed': 99999}]
 
@@ -559,8 +601,12 @@ def test_agefilter_min_days_listed_too_large(mocker, default_conf, markets, tick
         get_patched_freqtradebot(mocker, default_conf)
 
 
-def test_agefilter_caching(mocker, markets, whitelist_conf_3, tickers, ohlcv_history_list):
-
+def test_agefilter_caching(mocker, markets, whitelist_conf_agefilter, tickers, ohlcv_history):
+    ohlcv_data = {
+        ('ETH/BTC', '1d'): ohlcv_history,
+        ('TKN/BTC', '1d'): ohlcv_history,
+        ('LTC/BTC', '1d'): ohlcv_history,
+    }
     mocker.patch.multiple('freqtrade.exchange.Exchange',
                           markets=PropertyMock(return_value=markets),
                           exchange_has=MagicMock(return_value=True),
@@ -568,18 +614,85 @@ def test_agefilter_caching(mocker, markets, whitelist_conf_3, tickers, ohlcv_his
                           )
     mocker.patch.multiple(
         'freqtrade.exchange.Exchange',
-        get_historic_ohlcv=MagicMock(return_value=ohlcv_history_list),
+        refresh_latest_ohlcv=MagicMock(return_value=ohlcv_data),
     )
 
-    freqtrade = get_patched_freqtradebot(mocker, whitelist_conf_3)
-    assert freqtrade.exchange.get_historic_ohlcv.call_count == 0
+    freqtrade = get_patched_freqtradebot(mocker, whitelist_conf_agefilter)
+    assert freqtrade.exchange.refresh_latest_ohlcv.call_count == 0
     freqtrade.pairlists.refresh_pairlist()
-    assert freqtrade.exchange.get_historic_ohlcv.call_count > 0
+    assert len(freqtrade.pairlists.whitelist) == 3
+    assert freqtrade.exchange.refresh_latest_ohlcv.call_count > 0
+    # freqtrade.config['exchange']['pair_whitelist'].append('HOT/BTC')
 
-    previous_call_count = freqtrade.exchange.get_historic_ohlcv.call_count
+    previous_call_count = freqtrade.exchange.refresh_latest_ohlcv.call_count
     freqtrade.pairlists.refresh_pairlist()
+    assert len(freqtrade.pairlists.whitelist) == 3
+    # Called once for XRP/BTC
+    assert freqtrade.exchange.refresh_latest_ohlcv.call_count == previous_call_count + 1
+
+
+def test_rangestabilityfilter_checks(mocker, default_conf, markets, tickers):
+    default_conf['pairlists'] = [{'method': 'VolumePairList', 'number_assets': 10},
+                                 {'method': 'RangeStabilityFilter', 'lookback_days': 99999}]
+
+    mocker.patch.multiple('freqtrade.exchange.Exchange',
+                          markets=PropertyMock(return_value=markets),
+                          exchange_has=MagicMock(return_value=True),
+                          get_tickers=tickers
+                          )
+
+    with pytest.raises(OperationalException,
+                       match=r'RangeStabilityFilter requires lookback_days to not exceed '
+                             r'exchange max request size \([0-9]+\)'):
+        get_patched_freqtradebot(mocker, default_conf)
+
+    default_conf['pairlists'] = [{'method': 'VolumePairList', 'number_assets': 10},
+                                 {'method': 'RangeStabilityFilter', 'lookback_days': 0}]
+
+    with pytest.raises(OperationalException,
+                       match='RangeStabilityFilter requires lookback_days to be >= 1'):
+        get_patched_freqtradebot(mocker, default_conf)
+
+
+@pytest.mark.parametrize('min_rate_of_change,expected_length', [
+    (0.01, 5),
+    (0.05, 0),  # Setting rate_of_change to 5% removes all pairs from the whitelist.
+])
+def test_rangestabilityfilter_caching(mocker, markets, default_conf, tickers, ohlcv_history,
+                                      min_rate_of_change, expected_length):
+    default_conf['pairlists'] = [{'method': 'VolumePairList', 'number_assets': 10},
+                                 {'method': 'RangeStabilityFilter', 'lookback_days': 2,
+                                  'min_rate_of_change': min_rate_of_change}]
+
+    mocker.patch.multiple('freqtrade.exchange.Exchange',
+                          markets=PropertyMock(return_value=markets),
+                          exchange_has=MagicMock(return_value=True),
+                          get_tickers=tickers
+                          )
+    ohlcv_data = {
+        ('ETH/BTC', '1d'): ohlcv_history,
+        ('TKN/BTC', '1d'): ohlcv_history,
+        ('LTC/BTC', '1d'): ohlcv_history,
+        ('XRP/BTC', '1d'): ohlcv_history,
+        ('HOT/BTC', '1d'): ohlcv_history,
+        ('BLK/BTC', '1d'): ohlcv_history,
+    }
+    mocker.patch.multiple(
+        'freqtrade.exchange.Exchange',
+        refresh_latest_ohlcv=MagicMock(return_value=ohlcv_data),
+    )
+
+    freqtrade = get_patched_freqtradebot(mocker, default_conf)
+    assert freqtrade.exchange.refresh_latest_ohlcv.call_count == 0
+    freqtrade.pairlists.refresh_pairlist()
+    assert len(freqtrade.pairlists.whitelist) == expected_length
+    assert freqtrade.exchange.refresh_latest_ohlcv.call_count > 0
+
+    previous_call_count = freqtrade.exchange.refresh_latest_ohlcv.call_count
+    freqtrade.pairlists.refresh_pairlist()
+    assert len(freqtrade.pairlists.whitelist) == expected_length
     # Should not have increased since first call.
-    assert freqtrade.exchange.get_historic_ohlcv.call_count == previous_call_count
+    assert freqtrade.exchange.refresh_latest_ohlcv.call_count == previous_call_count
 
 
 @pytest.mark.parametrize("pairlistconfig,desc_expected,exception_expected", [
@@ -617,6 +730,11 @@ def test_agefilter_caching(mocker, markets, whitelist_conf_3, tickers, ohlcv_his
      None,
      "PriceFilter requires max_price to be >= 0"
      ),  # OperationalException expected
+    ({"method": "RangeStabilityFilter", "lookback_days": 10, "min_rate_of_change": 0.01},
+     "[{'RangeStabilityFilter': 'RangeStabilityFilter - Filtering pairs with rate of change below "
+     "0.01 over the last days.'}]",
+        None
+     ),
 ])
 def test_pricefilter_desc(mocker, whitelist_conf, markets, pairlistconfig,
                           desc_expected, exception_expected):
@@ -636,7 +754,7 @@ def test_pricefilter_desc(mocker, whitelist_conf, markets, pairlistconfig,
             freqtrade = get_patched_freqtradebot(mocker, whitelist_conf)
 
 
-def test_pairlistmanager_no_pairlist(mocker, markets, whitelist_conf, caplog):
+def test_pairlistmanager_no_pairlist(mocker, whitelist_conf):
     mocker.patch('freqtrade.exchange.Exchange.exchange_has', MagicMock(return_value=True))
 
     whitelist_conf['pairlists'] = []
@@ -644,3 +762,94 @@ def test_pairlistmanager_no_pairlist(mocker, markets, whitelist_conf, caplog):
     with pytest.raises(OperationalException,
                        match=r"No Pairlist Handlers defined"):
         get_patched_freqtradebot(mocker, whitelist_conf)
+
+
+@pytest.mark.parametrize("pairlists,pair_allowlist,overall_performance,allowlist_result", [
+    # No trades yet
+    ([{"method": "StaticPairList"}, {"method": "PerformanceFilter"}],
+     ['ETH/BTC', 'TKN/BTC', 'LTC/BTC'], [], ['ETH/BTC', 'TKN/BTC', 'LTC/BTC']),
+    # Happy path: Descending order, all values filled
+    ([{"method": "StaticPairList"}, {"method": "PerformanceFilter"}],
+     ['ETH/BTC', 'TKN/BTC'],
+     [{'pair': 'TKN/BTC', 'profit': 5, 'count': 3}, {'pair': 'ETH/BTC', 'profit': 4, 'count': 2}],
+     ['TKN/BTC', 'ETH/BTC']),
+    # Performance data outside allow list ignored
+    ([{"method": "StaticPairList"}, {"method": "PerformanceFilter"}],
+     ['ETH/BTC', 'TKN/BTC'],
+     [{'pair': 'OTHER/BTC', 'profit': 5, 'count': 3},
+      {'pair': 'ETH/BTC', 'profit': 4, 'count': 2}],
+     ['ETH/BTC', 'TKN/BTC']),
+    # Partial performance data missing and sorted between positive and negative profit
+    ([{"method": "StaticPairList"}, {"method": "PerformanceFilter"}],
+     ['ETH/BTC', 'TKN/BTC', 'LTC/BTC'],
+     [{'pair': 'ETH/BTC', 'profit': -5, 'count': 100},
+      {'pair': 'TKN/BTC', 'profit': 4, 'count': 2}],
+     ['TKN/BTC', 'LTC/BTC', 'ETH/BTC']),
+    # Tie in performance data broken by count (ascending)
+    ([{"method": "StaticPairList"}, {"method": "PerformanceFilter"}],
+     ['ETH/BTC', 'TKN/BTC', 'LTC/BTC'],
+     [{'pair': 'LTC/BTC', 'profit': -5.01, 'count': 101},
+      {'pair': 'TKN/BTC', 'profit': -5.01, 'count': 2},
+      {'pair': 'ETH/BTC', 'profit': -5.01, 'count': 100}],
+     ['TKN/BTC', 'ETH/BTC', 'LTC/BTC']),
+    # Tie in performance and count, broken by alphabetical sort
+    ([{"method": "StaticPairList"}, {"method": "PerformanceFilter"}],
+     ['ETH/BTC', 'TKN/BTC', 'LTC/BTC'],
+     [{'pair': 'LTC/BTC', 'profit': -5.01, 'count': 1},
+      {'pair': 'TKN/BTC', 'profit': -5.01, 'count': 1},
+      {'pair': 'ETH/BTC', 'profit': -5.01, 'count': 1}],
+     ['ETH/BTC', 'LTC/BTC', 'TKN/BTC']),
+])
+def test_performance_filter(mocker, whitelist_conf, pairlists, pair_allowlist, overall_performance,
+                            allowlist_result, tickers, markets, ohlcv_history_list):
+    allowlist_conf = whitelist_conf
+    allowlist_conf['pairlists'] = pairlists
+    allowlist_conf['exchange']['pair_whitelist'] = pair_allowlist
+
+    mocker.patch('freqtrade.exchange.Exchange.exchange_has', MagicMock(return_value=True))
+
+    freqtrade = get_patched_freqtradebot(mocker, allowlist_conf)
+    mocker.patch.multiple('freqtrade.exchange.Exchange',
+                          get_tickers=tickers,
+                          markets=PropertyMock(return_value=markets)
+                          )
+    mocker.patch.multiple('freqtrade.exchange.Exchange',
+                          get_historic_ohlcv=MagicMock(return_value=ohlcv_history_list),
+                          )
+    mocker.patch.multiple('freqtrade.persistence.Trade',
+                          get_overall_performance=MagicMock(return_value=overall_performance),
+                          )
+    freqtrade.pairlists.refresh_pairlist()
+    allowlist = freqtrade.pairlists.whitelist
+    assert allowlist == allowlist_result
+
+
+@pytest.mark.parametrize('wildcardlist,pairs,expected', [
+    (['BTC/USDT'],
+     ['BTC/USDT'],
+     ['BTC/USDT']),
+    (['BTC/USDT', 'ETH/USDT'],
+     ['BTC/USDT', 'ETH/USDT'],
+     ['BTC/USDT', 'ETH/USDT']),
+    (['BTC/USDT', 'ETH/USDT'],
+     ['BTC/USDT'], ['BTC/USDT']),  # Test one too many
+    (['.*/USDT'],
+     ['BTC/USDT', 'ETH/USDT'], ['BTC/USDT', 'ETH/USDT']),  # Wildcard simple
+    (['.*C/USDT'],
+     ['BTC/USDT', 'ETC/USDT', 'ETH/USDT'], ['BTC/USDT', 'ETC/USDT']),  # Wildcard exclude one
+    (['.*UP/USDT', 'BTC/USDT', 'ETH/USDT'],
+     ['BTC/USDT', 'ETC/USDT', 'ETH/USDT', 'BTCUP/USDT', 'XRPUP/USDT', 'XRPDOWN/USDT'],
+     ['BTC/USDT', 'ETH/USDT', 'BTCUP/USDT', 'XRPUP/USDT']),  # Wildcard exclude one
+    (['BTC/.*', 'ETH/.*'],
+     ['BTC/USDT', 'ETC/USDT', 'ETH/USDT', 'BTC/USD', 'ETH/EUR', 'BTC/GBP'],
+     ['BTC/USDT', 'ETH/USDT', 'BTC/USD', 'ETH/EUR', 'BTC/GBP']),  # Wildcard exclude one
+    (['*UP/USDT', 'BTC/USDT', 'ETH/USDT'],
+     ['BTC/USDT', 'ETC/USDT', 'ETH/USDT', 'BTCUP/USDT', 'XRPUP/USDT', 'XRPDOWN/USDT'],
+     None),
+])
+def test_expand_pairlist(wildcardlist, pairs, expected):
+    if expected is None:
+        with pytest.raises(ValueError, match=r'Wildcard error in \*UP/USDT,'):
+            expand_pairlist(wildcardlist, pairs)
+    else:
+        assert sorted(expand_pairlist(wildcardlist, pairs)) == sorted(expected)

@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from freqtrade.persistence.models import Order, Trade
 
 
@@ -30,6 +32,7 @@ def mock_trade_1(fee):
         exchange='bittrex',
         open_order_id='dry_run_buy_12345',
         strategy='DefaultStrategy',
+        timeframe=5,
     )
     o = Order.parse_from_ccxt_object(mock_order_1(), 'ETH/BTC', 'buy')
     trade.orders.append(o)
@@ -82,6 +85,10 @@ def mock_trade_2(fee):
         is_open=False,
         open_order_id='dry_run_sell_12345',
         strategy='DefaultStrategy',
+        timeframe=5,
+        sell_reason='sell_signal',
+        open_date=datetime.now(tz=timezone.utc) - timedelta(minutes=20),
+        close_date=datetime.now(tz=timezone.utc),
     )
     o = Order.parse_from_ccxt_object(mock_order_2(), 'ETC/BTC', 'buy')
     trade.orders.append(o)
@@ -127,6 +134,7 @@ def mock_trade_3(fee):
         pair='XRP/BTC',
         stake_amount=0.001,
         amount=123.0,
+        amount_requested=123.0,
         fee_open=fee.return_value,
         fee_close=fee.return_value,
         open_rate=0.05,
@@ -134,6 +142,11 @@ def mock_trade_3(fee):
         close_profit=0.01,
         exchange='bittrex',
         is_open=False,
+        strategy='DefaultStrategy',
+        timeframe=5,
+        sell_reason='roi',
+        open_date=datetime.now(tz=timezone.utc) - timedelta(minutes=20),
+        close_date=datetime.now(tz=timezone.utc),
     )
     o = Order.parse_from_ccxt_object(mock_order_3(), 'XRP/BTC', 'buy')
     trade.orders.append(o)
@@ -171,6 +184,7 @@ def mock_trade_4(fee):
         exchange='bittrex',
         open_order_id='prod_buy_12345',
         strategy='DefaultStrategy',
+        timeframe=5,
     )
     o = Order.parse_from_ccxt_object(mock_order_4(), 'ETC/BTC', 'buy')
     trade.orders.append(o)

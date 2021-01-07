@@ -23,8 +23,8 @@ The Edge Positioning module seeks to improve a strategy's winning probability an
 We raise the following question[^1]:
 
 !!! Question "Which trade is a better option?"
-    a) A trade with 80% of chance of losing $100 and 20% chance of winning $200<br/>
-    b) A trade with 100% of chance of losing $30
+    a) A trade with 80% of chance of losing 100\$ and 20% chance of winning 200\$<br/>
+    b) A trade with 100% of chance of losing 30\$
 
 ???+ Info "Answer"
     The expected value of *a)* is smaller than the expected value of *b)*.<br/>
@@ -34,8 +34,8 @@ We raise the following question[^1]:
 Another way to look at it is to ask a similar question:
 
 !!! Question "Which trade is a better option?"
-    a) A trade with 80% of chance of winning 100 and 20% chance of losing $200<br/>
-    b) A trade with 100% of chance of winning $30
+    a) A trade with 80% of chance of winning 100\$ and 20% chance of losing 200\$<br/>
+    b) A trade with 100% of chance of winning 30\$
 
 Edge positioning tries to answer the hard questions about risk/reward and position size automatically, seeking to minimizes the chances of losing of a given strategy.
 
@@ -82,20 +82,34 @@ Risk Reward Ratio ($R$) is a formula used to measure the expected gains of a giv
 $$ R = \frac{\text{potential_profit}}{\text{potential_loss}} $$
 
 ???+ Example "Worked example of $R$ calculation"
-    Let's say that you think that the price of *stonecoin* today is $10.0. You believe that, because they will start mining stonecoin, it will go up to $15.0 tomorrow. There is the risk that the stone is too hard, and the GPUs can't mine it, so the price might go to $0 tomorrow. You are planning to invest $100.<br>
-    Your potential profit is calculated as:<br>
+    Let's say that you think that the price of *stonecoin* today is 10.0\$. You believe that, because they will start mining stonecoin, it will go up to 15.0\$ tomorrow. There is the risk that the stone is too hard, and the GPUs can't mine it, so the price might go to 0\$ tomorrow. You are planning to invest 100\$, which will give you 10 shares (100 / 10).
+
+    Your potential profit is calculated as:
+
     $\begin{aligned} 
-        \text{potential_profit} &= (\text{potential_price} - \text{cost_per_unit}) * \frac{\text{investment}}{\text{cost_per_unit}} \\
-                                &= (15 - 10) * \frac{100}{15}\\
-                                &= 33.33
-    \end{aligned}$<br>
-    Since the price might go to $0, the $100 dolars invested could turn into 0. We can compute the Risk Reward Ratio as follows:<br>
+        \text{potential_profit} &= (\text{potential_price} - \text{entry_price}) * \frac{\text{investment}}{\text{entry_price}} \\
+                                &= (15 - 10) * (100 / 10) \\
+                                &= 50
+    \end{aligned}$
+
+    Since the price might go to 0\$, the 100\$ dollars invested could turn into 0.
+
+    We do however use a stoploss of 15% - so in the worst case, we'll sell 15% below entry price (or at 8.5$\).
+
+    $\begin{aligned}
+        \text{potential_loss} &= (\text{entry_price} - \text{stoploss}) * \frac{\text{investment}}{\text{entry_price}} \\
+                                &= (10 - 8.5) * (100 / 10)\\
+                                &= 15
+    \end{aligned}$
+
+    We can compute the Risk Reward Ratio as follows:
+
     $\begin{aligned}
         R   &= \frac{\text{potential_profit}}{\text{potential_loss}}\\
-            &= \frac{33.33}{100}\\
-            &= 0.333...
+            &= \frac{50}{15}\\
+            &= 3.33
     \end{aligned}$<br>
-    What it effectivelly means is that the strategy have the potential to make $0.33 for each $1 invested. 
+    What it effectively means is that the strategy have the potential to make 3.33\$ for each 1\$ invested.
 
 On a long horizon, that is, on many trades, we can calculate the risk reward by dividing the strategy' average profit on winning trades by the strategy' average loss on losing trades. We can calculate the average profit, $\mu_{win}$, as follows:
 
@@ -127,7 +141,7 @@ $$E = R * W - L$$
     $E = R * W - L = 5 * 0.28 - 0.72 = 0.68$
     <br>
 
-The expectancy worked out in the example above means that, on average, this strategy' trades will return 1.68 times the size of its losses. Said another way, the strategy makes $1.68 for every $1 it loses, on average. 
+The expectancy worked out in the example above means that, on average, this strategy' trades will return 1.68 times the size of its losses. Said another way, the strategy makes 1.68\$ for every 1\$ it loses, on average. 
 
 This is important for two reasons: First, it may seem obvious, but you know right away that you have a positive return. Second, you now have a number you can compare to other candidate systems to make decisions about which ones you employ.
 
@@ -208,7 +222,7 @@ Edge module has following configuration options:
 | `stoploss_range_max` | Maximum stoploss. <br>*Defaults to `-0.10`.* <br> **Datatype:** Float
 | `stoploss_range_step` | As an example if this is set to -0.01 then Edge will test the strategy for `[-0.01, -0,02, -0,03 ..., -0.09, -0.10]` ranges. <br> **Note** than having a smaller step means having a bigger range which could lead to slow calculation. <br> If you set this parameter to -0.001, you then slow down the Edge calculation by a factor of 10. <br>*Defaults to `-0.001`.* <br> **Datatype:** Float
 | `minimum_winrate` | It filters out pairs which don't have at least minimum_winrate. <br>This comes handy if you want to be conservative and don't comprise win rate in favour of risk reward ratio. <br>*Defaults to `0.60`.* <br> **Datatype:** Float
-| `minimum_expectancy` | It filters out pairs which have the expectancy lower than this number. <br>Having an expectancy of 0.20 means if you put 10$ on a trade you expect a 12$ return. <br>*Defaults to `0.20`.* <br> **Datatype:** Float
+| `minimum_expectancy` | It filters out pairs which have the expectancy lower than this number. <br>Having an expectancy of 0.20 means if you put 10\$ on a trade you expect a 12\$ return. <br>*Defaults to `0.20`.* <br> **Datatype:** Float
 | `min_trade_number` | When calculating *W*, *R* and *E* (expectancy) against historical data, you always want to have a minimum number of trades. The more this number is the more Edge is reliable. <br>Having a win rate of 100% on a single trade doesn't mean anything at all. But having a win rate of 70% over past 100 trades means clearly something. <br>*Defaults to `10` (it is highly recommended not to decrease this number).* <br> **Datatype:** Integer
 | `max_trade_duration_minute` | Edge will filter out trades with long duration. If a trade is profitable after 1 month, it is hard to evaluate the strategy based on it. But if most of trades are profitable and they have maximum duration of 30 minutes, then it is clearly a good sign.<br>**NOTICE:** While configuring this value, you should take into consideration your timeframe. As an example filtering out trades having duration less than one day for a strategy which has 4h interval does not make sense. Default value is set assuming your strategy interval is relatively small (1m or 5m, etc.).<br>*Defaults to `1440` (one day).* <br> **Datatype:** Integer
 | `remove_pumps` | Edge will remove sudden pumps in a given market while going through historical data. However, given that pumps happen very often in crypto markets, we recommend you keep this off.<br>*Defaults to `false`.* <br> **Datatype:** Boolean

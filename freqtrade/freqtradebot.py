@@ -4,7 +4,7 @@ Freqtrade is the main module of this bot. It contains the class Freqtrade()
 import copy
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from math import isclose
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -12,17 +12,19 @@ from typing import Any, Dict, List, Optional
 import arrow
 from cachetools import TTLCache
 
-from freqtrade import __version__, constants, persistence
+from freqtrade import __version__, constants
 from freqtrade.configuration import validate_config_consistency
 from freqtrade.data.converter import order_book_to_dataframe
 from freqtrade.data.dataprovider import DataProvider
 from freqtrade.edge import Edge
 from freqtrade.exceptions import (DependencyException, ExchangeError, InsufficientFundsError,
                                   InvalidOrderException, PricingError)
-from freqtrade.exchange import timeframe_to_minutes, timeframe_to_next_date
+from freqtrade.exchange import timeframe_to_minutes, timeframe_to_seconds
 from freqtrade.misc import safe_value_fallback, safe_value_fallback2
-from freqtrade.pairlist.pairlistmanager import PairListManager
-from freqtrade.persistence import Order, Trade
+from freqtrade.mixins import LoggingMixin
+from freqtrade.persistence import Order, PairLocks, Trade, cleanup_db, init_db
+from freqtrade.plugins.pairlistmanager import PairListManager
+from freqtrade.plugins.protectionmanager import ProtectionManager
 from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.rpc import RPCManager, RPCMessageType
 from freqtrade.state import State
@@ -30,10 +32,11 @@ from freqtrade.strategy.interface import IStrategy, SellType
 from freqtrade.strategy.strategy_wrapper import strategy_safe_wrapper
 from freqtrade.wallets import Wallets
 
+
 logger = logging.getLogger(__name__)
 
 
-class FreqtradeBot:
+class FreqtradeBot(LoggingMixin):
     """
     Freqtrade is the main class of the bot.
     This is from here the bot start its logic.
@@ -57,8 +60,8 @@ class FreqtradeBot:
         # Cache values for 1800 to avoid frequent polling of the exchange for prices
         # Caching only applies to RPC methods, so prices for open trades are still
         # refreshed once every iteration.
-        self._sell_rate_cache = TTLCache(maxsize=100, ttl=1800)
-        self._buy_rate_cache = TTLCache(maxsize=100, ttl=1800)
+        self._sell_rate_cache: TTLCache = TTLCache(maxsize=100, ttl=1800)
+        self._buy_rate_cache: TTLCache = TTLCache(maxsize=100, ttl=1800)
 
         self.strategy: IStrategy = StrategyResolver.load_strategy(self.config)
 
@@ -67,13 +70,17 @@ class FreqtradeBot:
 
         self.exchange = ExchangeResolver.load_exchange(self.config['exchange']['name'], self.config)
 
-        persistence.init(self.config.get('db_url', None), clean_open_orders=self.config['dry_run'])
+        init_db(self.config.get('db_url', None), clean_open_orders=self.config['dry_run'])
 
         self.wallets = Wallets(self.config, self.exchange)
+
+        PairLocks.timeframe = self.config['timeframe']
 
         self.pairlists = PairListManager(self.exchange, self.config)
 
         self.dataprovider = DataProvider(self.config, self.exchange, self.pairlists)
+
+        self.protections = ProtectionManager(self.config)
 
         # Attach Dataprovider to Strategy baseclass
         IStrategy.dp = self.dataprovider
@@ -98,6 +105,7 @@ class FreqtradeBot:
         self.rpc: RPCManager = RPCManager(self)
         # Protect sell-logic from forcesell and viceversa
         self._sell_lock = Lock()
+        LoggingMixin.__init__(self, logger, timeframe_to_seconds(self.strategy.timeframe))
 
     def notify_status(self, msg: str) -> None:
         """
@@ -122,14 +130,14 @@ class FreqtradeBot:
         self.check_for_open_trades()
 
         self.rpc.cleanup()
-        persistence.cleanup()
+        cleanup_db()
 
     def startup(self) -> None:
         """
         Called on startup and after reloading the bot - triggers notifications and
         performs startup tasks
         """
-        self.rpc.startup_messages(self.config, self.pairlists)
+        self.rpc.startup_messages(self.config, self.pairlists, self.protections)
         if not self.edge:
             # Adjust stoploss if it was changed
             Trade.stoploss_reinitialization(self.strategy.stoploss)
@@ -238,6 +246,10 @@ class FreqtradeBot:
         Updates open orders based on order list kept in the database.
         Mainly updates the state of orders - but may also close trades
         """
+        if self.config['dry_run']:
+            # Updating open orders in dry-run does not make sense and will fail.
+            return
+
         orders = Order.get_open_orders()
         logger.info(f"Updating {len(orders)} open orders.")
         for order in orders:
@@ -248,6 +260,7 @@ class FreqtradeBot:
                 self.update_trade_state(order.trade, order.order_id, fo)
 
             except ExchangeError as e:
+
                 logger.warning(f"Error updating Order {order.order_id} due to {e}")
 
     def update_closed_trades_without_assigned_fees(self):
@@ -344,27 +357,35 @@ class FreqtradeBot:
         whitelist = copy.deepcopy(self.active_pair_whitelist)
         if not whitelist:
             logger.info("Active pair whitelist is empty.")
-        else:
-            # Remove pairs for currently opened trades from the whitelist
-            for trade in Trade.get_open_trades():
-                if trade.pair in whitelist:
-                    whitelist.remove(trade.pair)
-                    logger.debug('Ignoring %s in pair whitelist', trade.pair)
+            return trades_created
+        # Remove pairs for currently opened trades from the whitelist
+        for trade in Trade.get_open_trades():
+            if trade.pair in whitelist:
+                whitelist.remove(trade.pair)
+                logger.debug('Ignoring %s in pair whitelist', trade.pair)
 
-            if not whitelist:
-                logger.info("No currency pair in active pair whitelist, "
-                            "but checking to sell open trades.")
+        if not whitelist:
+            logger.info("No currency pair in active pair whitelist, "
+                        "but checking to sell open trades.")
+            return trades_created
+        if PairLocks.is_global_lock():
+            lock = PairLocks.get_pair_longest_lock('*')
+            if lock:
+                self.log_once(f"Global pairlock active until "
+                              f"{lock.lock_end_time.strftime(constants.DATETIME_PRINT_FORMAT)}. "
+                              "Not creating new trades.", logger.info)
             else:
-                # Create entity and execute trade for each pair from whitelist
-                for pair in whitelist:
-                    try:
-                        trades_created += self.create_trade(pair)
-                    except DependencyException as exception:
-                        logger.warning('Unable to create trade for %s: %s', pair, exception)
+                self.log_once("Global pairlock active. Not creating new trades.", logger.info)
+            return trades_created
+        # Create entity and execute trade for each pair from whitelist
+        for pair in whitelist:
+            try:
+                trades_created += self.create_trade(pair)
+            except DependencyException as exception:
+                logger.warning('Unable to create trade for %s: %s', pair, exception)
 
-                if not trades_created:
-                    logger.debug("Found no buy signals for whitelisted currencies. "
-                                 "Trying again...")
+        if not trades_created:
+            logger.debug("Found no buy signals for whitelisted currencies. Trying again...")
 
         return trades_created
 
@@ -516,8 +537,7 @@ class FreqtradeBot:
         # reserve some percent defined in config (5% default) + stoploss
         amount_reserve_percent = 1.0 - self.config.get('amount_reserve_percent',
                                                        constants.DEFAULT_AMOUNT_RESERVE_PERCENT)
-        if self.strategy.stoploss is not None:
-            amount_reserve_percent += self.strategy.stoploss
+        amount_reserve_percent += self.strategy.stoploss
         # it should not be more than 50%
         amount_reserve_percent = max(amount_reserve_percent, 0.5)
 
@@ -538,9 +558,15 @@ class FreqtradeBot:
         logger.debug(f"create_trade for pair {pair}")
 
         analyzed_df, _ = self.dataprovider.get_analyzed_dataframe(pair, self.strategy.timeframe)
-        if self.strategy.is_pair_locked(
-                pair, analyzed_df.iloc[-1]['date'] if len(analyzed_df) > 0 else None):
-            logger.info(f"Pair {pair} is currently locked.")
+        nowtime = analyzed_df.iloc[-1]['date'] if len(analyzed_df) > 0 else None
+        if self.strategy.is_pair_locked(pair, nowtime):
+            lock = PairLocks.get_pair_longest_lock(pair, nowtime)
+            if lock:
+                self.log_once(f"Pair {pair} is still locked until "
+                              f"{lock.lock_end_time.strftime(constants.DATETIME_PRINT_FORMAT)}.",
+                              logger.info)
+            else:
+                self.log_once(f"Pair {pair} is still locked.", logger.info)
             return False
 
         # get_free_open_trades is checked before create_trade is called
@@ -612,6 +638,9 @@ class FreqtradeBot:
         else:
             # Calculate price
             buy_limit_requested = self.get_buy_rate(pair, True)
+
+        if not buy_limit_requested:
+            raise PricingError('Could not determine buy price.')
 
         min_stake_amount = self._get_min_pair_stake_amount(pair, buy_limit_requested)
         if min_stake_amount is not None and min_stake_amount > stake_amount:
@@ -936,8 +965,8 @@ class FreqtradeBot:
             self.update_trade_state(trade, trade.stoploss_order_id, stoploss_order,
                                     stoploss_order=True)
             # Lock pair for one candle to prevent immediate rebuys
-            self.strategy.lock_pair(trade.pair,
-                                    timeframe_to_next_date(self.config['timeframe']))
+            self.strategy.lock_pair(trade.pair, datetime.now(timezone.utc),
+                                    reason='Auto lock')
             self._notify_sell(trade, "stoploss")
             return True
 
@@ -1263,7 +1292,8 @@ class FreqtradeBot:
         Trade.session.flush()
 
         # Lock pair for one candle to prevent immediate rebuys
-        self.strategy.lock_pair(trade.pair, timeframe_to_next_date(self.config['timeframe']))
+        self.strategy.lock_pair(trade.pair, datetime.now(timezone.utc),
+                                reason='Auto lock')
 
         self._notify_sell(trade, order_type)
 
@@ -1389,7 +1419,7 @@ class FreqtradeBot:
                            abs_tol=constants.MATH_CLOSE_PREC):
                 order['amount'] = new_amount
                 order.pop('filled', None)
-                trade.recalc_open_trade_price()
+                trade.recalc_open_trade_value()
         except DependencyException as exception:
             logger.warning("Could not update trade amount: %s", exception)
 
@@ -1401,6 +1431,8 @@ class FreqtradeBot:
 
         # Updating wallets when order is closed
         if not trade.is_open:
+            self.protections.stop_per_pair(trade.pair)
+            self.protections.global_stop()
             self.wallets.update()
         return False
 
@@ -1442,13 +1474,16 @@ class FreqtradeBot:
             fee_cost, fee_currency, fee_rate = self.exchange.extract_cost_curr_rate(order)
             logger.info(f"Fee for Trade {trade} [{order.get('side')}]: "
                         f"{fee_cost:.8g} {fee_currency} - rate: {fee_rate}")
-
-            trade.update_fee(fee_cost, fee_currency, fee_rate, order.get('side', ''))
-            if trade_base_currency == fee_currency:
-                # Apply fee to amount
-                return self.apply_fee_conditional(trade, trade_base_currency,
-                                                  amount=order_amount, fee_abs=fee_cost)
-            return order_amount
+            if fee_rate is None or fee_rate < 0.02:
+                # Reject all fees that report as > 2%.
+                # These are most likely caused by a parsing bug in ccxt
+                # due to multiple trades (https://github.com/ccxt/ccxt/issues/8025)
+                trade.update_fee(fee_cost, fee_currency, fee_rate, order.get('side', ''))
+                if trade_base_currency == fee_currency:
+                    # Apply fee to amount
+                    return self.apply_fee_conditional(trade, trade_base_currency,
+                                                      amount=order_amount, fee_abs=fee_cost)
+                return order_amount
         return self.fee_detection_from_trades(trade, order, order_amount)
 
     def fee_detection_from_trades(self, trade: Trade, order: Dict, order_amount: float) -> float:

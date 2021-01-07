@@ -21,7 +21,7 @@ git clone https://github.com/freqtrade/freqtrade.git
 
 Install ta-lib according to the [ta-lib documentation](https://github.com/mrjbq7/ta-lib#windows).
 
-As compiling from source on windows has heavy dependencies (requires a partial visual studio installation), there is also a repository of unofficial precompiled windows Wheels [here](https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib), which needs to be downloaded and installed using `pip install TA_Lib‑0.4.18‑cp38‑cp38‑win_amd64.whl` (make sure to use the version matching your python version)
+As compiling from source on windows has heavy dependencies (requires a partial visual studio installation), there is also a repository of unofficial precompiled windows Wheels [here](https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib), which needs to be downloaded and installed using `pip install TA_Lib‑0.4.19‑cp38‑cp38‑win_amd64.whl` (make sure to use the version matching your python version)
 
 Freqtrade provides these dependencies for the latest 2 Python versions (3.7 and 3.8) and for 64bit Windows.
 Other versions must be downloaded from the above link.
@@ -32,7 +32,7 @@ python -m venv .env
 .env\Scripts\activate.ps1
 # optionally install ta-lib from wheel
 # Eventually adjust the below filename to match the downloaded wheel
-pip install build_helpes/TA_Lib‑0.4.18‑cp38‑cp38‑win_amd64.whl
+pip install build_helpers/TA_Lib-0.4.19-cp38-cp38-win_amd64.whl
 pip install -r requirements.txt
 pip install -e .
 freqtrade
@@ -50,8 +50,8 @@ freqtrade
 error: Microsoft Visual C++ 14.0 is required. Get it with "Microsoft Visual C++ Build Tools": http://landinghub.visualstudio.com/visual-cpp-build-tools
 ```
 
-Unfortunately, many packages requiring compilation don't provide a pre-build wheel. It is therefore mandatory to have a C/C++ compiler installed and available for your python environment to use.
+Unfortunately, many packages requiring compilation don't provide a pre-built wheel. It is therefore mandatory to have a C/C++ compiler installed and available for your python environment to use.
 
-The easiest way is to download install Microsoft Visual Studio Community [here](https://visualstudio.microsoft.com/downloads/) and make sure to install "Common Tools for Visual C++" to enable building c code on Windows. Unfortunately, this is a heavy download / dependency (~4Gb) so you might want to consider WSL or [docker](docker.md) first.
+The easiest way is to download install Microsoft Visual Studio Community [here](https://visualstudio.microsoft.com/downloads/) and make sure to install "Common Tools for Visual C++" to enable building C code on Windows. Unfortunately, this is a heavy download / dependency (~4Gb) so you might want to consider WSL or [docker](docker.md) first.
 
 ---

@@ -2,7 +2,7 @@
 
 This page is intended for developers of Freqtrade, people who want to contribute to the Freqtrade codebase or documentation, or people who want to understand the source code of the application they're running.
 
-All contributions, bug reports, bug fixes, documentation improvements, enhancements and ideas are welcome. We [track issues](https://github.com/freqtrade/freqtrade/issues) on [GitHub](https://github.com) and also have a dev channel in [slack](https://join.slack.com/t/highfrequencybot/shared_invite/enQtNjU5ODcwNjI1MDU3LTU1MTgxMjkzNmYxNWE1MDEzYzQ3YmU4N2MwZjUyNjJjODRkMDVkNjg4YTAyZGYzYzlhOTZiMTE4ZjQ4YzM0OGE) where you can ask questions.
+All contributions, bug reports, bug fixes, documentation improvements, enhancements and ideas are welcome. We [track issues](https://github.com/freqtrade/freqtrade/issues) on [GitHub](https://github.com) and also have a dev channel on [discord](https://discord.gg/MA9v74M) or [slack](https://join.slack.com/t/highfrequencybot/shared_invite/zt-k9o2v5ut-jX8Mc4CwNM8CDc2Dyg96YA) where you can ask questions.
 
 ## Documentation
 
@@ -94,9 +94,11 @@ Below is an outline of exception inheritance hierarchy:
 +---+ StrategyError
 ```
 
-## Modules
+---
 
-### Dynamic Pairlist
+## Plugins
+
+### Pairlists
 
 You have a great idea for a new pair selection algorithm you would like to try out? Great.
 Hopefully you also want to contribute this back upstream.
@@ -118,6 +120,9 @@ The base-class provides an instance of the exchange (`self._exchange`) the pairl
         self._pairlistconfig = pairlistconfig
         self._pairlist_pos = pairlist_pos
 ```
+
+!!! Tip
+    Don't forget to register your pairlist in `constants.py` under the variable `AVAILABLE_PAIRLISTS` - otherwise it will not be selectable.
 
 Now, let's step through the methods which require actions:
 
@@ -170,12 +175,75 @@ In `VolumePairList`, this implements different methods of sorting, does early va
         return pairs
 ```
 
+### Protections
+
+Best read the [Protection documentation](configuration.md#protections) to understand protections.
+This Guide is directed towards Developers who want to develop a new protection.
+
+No protection should use datetime directly, but use the provided `date_now` variable for date calculations. This preserves the ability to backtest protections.
+
+!!! Tip "Writing a new Protection"
+    Best copy one of the existing Protections to have a good example.
+    Don't forget to register your protection in `constants.py` under the variable `AVAILABLE_PROTECTIONS` - otherwise it will not be selectable.
+
+#### Implementation of a new protection
+
+All Protection implementations must have `IProtection` as parent class.
+For that reason, they must implement the following methods:
+
+* `short_desc()`
+* `global_stop()`
+* `stop_per_pair()`.
+
+`global_stop()` and `stop_per_pair()` must return a ProtectionReturn tuple, which consists of:
+
+* lock pair - boolean
+* lock until - datetime - until when should the pair be locked (will be rounded up to the next new candle)
+* reason - string, used for logging and storage in the database
+
+The `until` portion should be calculated using the provided `calculate_lock_end()` method.
+
+All Protections should use `"stop_duration"` / `"stop_duration_candles"` to define how long a a pair (or all pairs) should be locked.
+The content of this is made available as `self._stop_duration` to the each Protection.
+
+If your protection requires a look-back period, please use `"lookback_period"` / `"lockback_period_candles"` to keep all protections aligned.
+
+#### Global vs. local stops
+
+Protections can have 2 different ways to stop trading for a limited :
+
+* Per pair (local)
+* For all Pairs (globally)
+
+##### Protections - per pair
+
+Protections that implement the per pair approach must set `has_local_stop=True`.
+The method `stop_per_pair()` will be called whenever a trade closed (sell order completed).
+
+##### Protections - global protection
+
+These Protections should do their evaluation across all pairs, and consequently will also lock all pairs from trading (called a global PairLock).
+Global protection must set `has_global_stop=True` to be evaluated for global stops.
+The method `global_stop()` will be called whenever a trade closed (sell order completed).
+
+##### Protections - calculating lock end time
+
+Protections should calculate the lock end time based on the last trade it considers.
+This avoids re-locking should the lookback-period be longer than the actual lock period.
+
+The `IProtection` parent class provides a helper method for this in `calculate_lock_end()`.
+
+---
+
 ## Implement a new Exchange (WIP)
 
 !!! Note
     This section is a Work in Progress and is not a complete guide on how to test a new exchange with Freqtrade.
 
 Most exchanges supported by CCXT should work out of the box.
+
+To quickly test the public endpoints of an exchange, add a configuration for your exchange to `test_ccxt_compat.py` and run these tests with `pytest --longrun tests/exchange/test_ccxt_compat.py`.
+Completing these tests successfully a good basis point (it's a requirement, actually), however these won't guarantee correct exchange functioning, as this only tests public endpoints, but no private endpoint (like generate order or similar).
 
 ### Stoploss On Exchange
 
@@ -231,14 +299,14 @@ jupyter nbconvert --ClearOutputPreprocessor.enabled=True --to markdown freqtrade
 This documents some decisions taken for the CI Pipeline.
 
 * CI runs on all OS variants, Linux (ubuntu), macOS and Windows.
-* Docker images are build for the branches `master` and `develop`.
-* Docker images containing Plot dependencies are also available as `master_plot` and `develop_plot`.
-* Raspberry PI Docker images are postfixed with `_pi` - so tags will be `:master_pi` and `develop_pi`.
+* Docker images are build for the branches `stable` and `develop`.
+* Docker images containing Plot dependencies are also available as `stable_plot` and `develop_plot`.
+* Raspberry PI Docker images are postfixed with `_pi` - so tags will be `:stable_pi` and `develop_pi`.
 * Docker images contain a file, `/freqtrade/freqtrade_commit` containing the commit this image is based of.
 * Full docker image rebuilds are run once a week via schedule.
 * Deployments run on ubuntu.
 * ta-lib binaries are contained in the build_helpers directory to avoid fails related to external unavailability.
-* All tests must pass for a PR to be merged to `master` or `develop`.
+* All tests must pass for a PR to be merged to `stable` or `develop`.
 
 ## Creating a release
 
@@ -255,19 +323,19 @@ git checkout -b new_release <commitid>
 
 Determine if crucial bugfixes have been made between this commit and the current state, and eventually cherry-pick these.
 
-* Merge the release branch (master) into this branch.
+* Merge the release branch (stable) into this branch.
 * Edit `freqtrade/__init__.py` and add the version matching the current date (for example `2019.7` for July 2019). Minor versions can be `2019.7.1` should we need to do a second release that month. Version numbers must follow allowed versions from PEP0440 to avoid failures pushing to pypi.
 * Commit this part
-* push that branch to the remote and create a PR against the master branch
+* push that branch to the remote and create a PR against the stable branch
 
 ### Create changelog from git commits
 
 !!! Note
-    Make sure that the master branch is up-to-date!
+    Make sure that the `stable` branch is up-to-date!
 
 ``` bash
 # Needs to be done before merging / pulling that branch.
-git log --oneline --no-decorate --no-merges master..new_release
+git log --oneline --no-decorate --no-merges stable..new_release
 ```
 
 To keep the release-log short, best wrap the full git changelog into a collapsible details section.
@@ -283,11 +351,11 @@ To keep the release-log short, best wrap the full git changelog into a collapsib
 
 ### Create github release / tag
 
-Once the PR against master is merged (best right after merging):
+Once the PR against stable is merged (best right after merging):
 
 * Use the button "Draft a new release" in the Github UI (subsection releases).
 * Use the version-number specified as tag.
-* Use "master" as reference (this step comes after the above PR is merged).
+* Use "stable" as reference (this step comes after the above PR is merged).
 * Use the above changelog as release comment (as codeblock)
 
 ## Releases

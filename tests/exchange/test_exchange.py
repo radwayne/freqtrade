@@ -1,6 +1,6 @@
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from random import randint
 from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
@@ -9,20 +9,17 @@ import ccxt
 import pytest
 from pandas import DataFrame
 
-from freqtrade.exceptions import (DDosProtection, DependencyException,
-                                  InvalidOrderException, OperationalException,
-                                  TemporaryError)
-from freqtrade.exchange import Binance, Exchange, Kraken
-from freqtrade.exchange.common import (API_RETRY_COUNT, API_FETCH_ORDER_RETRY_COUNT,
+from freqtrade.exceptions import (DDosProtection, DependencyException, InvalidOrderException,
+                                  OperationalException, TemporaryError)
+from freqtrade.exchange import Binance, Bittrex, Exchange, Kraken
+from freqtrade.exchange.common import (API_FETCH_ORDER_RETRY_COUNT, API_RETRY_COUNT,
                                        calculate_backoff)
-from freqtrade.exchange.exchange import (market_is_active,
-                                         timeframe_to_minutes,
-                                         timeframe_to_msecs,
-                                         timeframe_to_next_date,
-                                         timeframe_to_prev_date,
+from freqtrade.exchange.exchange import (market_is_active, timeframe_to_minutes, timeframe_to_msecs,
+                                         timeframe_to_next_date, timeframe_to_prev_date,
                                          timeframe_to_seconds)
 from freqtrade.resolvers.exchange_resolver import ExchangeResolver
 from tests.conftest import get_patched_exchange, log_has, log_has_re
+
 
 # Make sure to always keep one exchange here which is NOT subclassed!!
 EXCHANGES = ['bittrex', 'binance', 'kraken', 'ftx']
@@ -151,9 +148,17 @@ def test_exchange_resolver(default_conf, mocker, caplog):
     mocker.patch('freqtrade.exchange.Exchange.validate_pairs')
     mocker.patch('freqtrade.exchange.Exchange.validate_timeframes')
     mocker.patch('freqtrade.exchange.Exchange.validate_stakecurrency')
-    exchange = ExchangeResolver.load_exchange('Bittrex', default_conf)
+
+    exchange = ExchangeResolver.load_exchange('huobi', default_conf)
     assert isinstance(exchange, Exchange)
     assert log_has_re(r"No .* specific subclass found. Using the generic class instead.", caplog)
+    caplog.clear()
+
+    exchange = ExchangeResolver.load_exchange('Bittrex', default_conf)
+    assert isinstance(exchange, Exchange)
+    assert isinstance(exchange, Bittrex)
+    assert not log_has_re(r"No .* specific subclass found. Using the generic class instead.",
+                          caplog)
     caplog.clear()
 
     exchange = ExchangeResolver.load_exchange('kraken', default_conf)
@@ -388,7 +393,7 @@ def test_reload_markets(default_conf, mocker, caplog):
     exchange = get_patched_exchange(mocker, default_conf, api_mock, id="binance",
                                     mock_markets=False)
     exchange._load_async_markets = MagicMock()
-    exchange._last_markets_refresh = arrow.utcnow().timestamp
+    exchange._last_markets_refresh = arrow.utcnow().int_timestamp
     updated_markets = {'ETH/BTC': {}, "LTC/BTC": {}}
 
     assert exchange.markets == initial_markets
@@ -399,7 +404,7 @@ def test_reload_markets(default_conf, mocker, caplog):
     assert exchange._load_async_markets.call_count == 0
 
     # more than 10 minutes have passed, reload is executed
-    exchange._last_markets_refresh = arrow.utcnow().timestamp - 15 * 60
+    exchange._last_markets_refresh = arrow.utcnow().int_timestamp - 15 * 60
     exchange.reload_markets()
     assert exchange.markets == updated_markets
     assert exchange._load_async_markets.call_count == 1
@@ -1267,7 +1272,7 @@ def test_get_historic_ohlcv(default_conf, mocker, caplog, exchange_name):
     exchange = get_patched_exchange(mocker, default_conf, id=exchange_name)
     ohlcv = [
         [
-            arrow.utcnow().timestamp * 1000,  # unix timestamp ms
+            arrow.utcnow().int_timestamp * 1000,  # unix timestamp ms
             1,  # open
             2,  # high
             3,  # low
@@ -1284,17 +1289,30 @@ def test_get_historic_ohlcv(default_conf, mocker, caplog, exchange_name):
     # one_call calculation * 1.8 should do 2 calls
 
     since = 5 * 60 * exchange._ft_has['ohlcv_candle_limit'] * 1.8
-    ret = exchange.get_historic_ohlcv(pair, "5m", int((arrow.utcnow().timestamp - since) * 1000))
+    ret = exchange.get_historic_ohlcv(pair, "5m", int((
+        arrow.utcnow().int_timestamp - since) * 1000))
 
     assert exchange._async_get_candle_history.call_count == 2
     # Returns twice the above OHLCV data
     assert len(ret) == 2
 
+    caplog.clear()
 
-def test_refresh_latest_ohlcv(mocker, default_conf, caplog) -> None:
+    async def mock_get_candle_hist_error(pair, *args, **kwargs):
+        raise TimeoutError()
+
+    exchange._async_get_candle_history = MagicMock(side_effect=mock_get_candle_hist_error)
+    ret = exchange.get_historic_ohlcv(pair, "5m", int(
+        (arrow.utcnow().int_timestamp - since) * 1000))
+    assert log_has_re(r"Async code raised an exception: .*", caplog)
+
+
+@pytest.mark.parametrize("exchange_name", EXCHANGES)
+def test_get_historic_ohlcv_as_df(default_conf, mocker, exchange_name):
+    exchange = get_patched_exchange(mocker, default_conf, id=exchange_name)
     ohlcv = [
         [
-            (arrow.utcnow().timestamp - 1) * 1000,  # unix timestamp ms
+            arrow.utcnow().int_timestamp * 1000,  # unix timestamp ms
             1,  # open
             2,  # high
             3,  # low
@@ -1302,7 +1320,56 @@ def test_refresh_latest_ohlcv(mocker, default_conf, caplog) -> None:
             5,  # volume (in quote currency)
         ],
         [
-            arrow.utcnow().timestamp * 1000,  # unix timestamp ms
+            arrow.utcnow().shift(minutes=5).int_timestamp * 1000,  # unix timestamp ms
+            1,  # open
+            2,  # high
+            3,  # low
+            4,  # close
+            5,  # volume (in quote currency)
+        ],
+        [
+            arrow.utcnow().shift(minutes=10).int_timestamp * 1000,  # unix timestamp ms
+            1,  # open
+            2,  # high
+            3,  # low
+            4,  # close
+            5,  # volume (in quote currency)
+        ]
+    ]
+    pair = 'ETH/BTC'
+
+    async def mock_candle_hist(pair, timeframe, since_ms):
+        return pair, timeframe, ohlcv
+
+    exchange._async_get_candle_history = Mock(wraps=mock_candle_hist)
+    # one_call calculation * 1.8 should do 2 calls
+
+    since = 5 * 60 * exchange._ft_has['ohlcv_candle_limit'] * 1.8
+    ret = exchange.get_historic_ohlcv_as_df(pair, "5m", int((
+        arrow.utcnow().int_timestamp - since) * 1000))
+
+    assert exchange._async_get_candle_history.call_count == 2
+    # Returns twice the above OHLCV data
+    assert len(ret) == 2
+    assert isinstance(ret, DataFrame)
+    assert 'date' in ret.columns
+    assert 'open' in ret.columns
+    assert 'close' in ret.columns
+    assert 'high' in ret.columns
+
+
+def test_refresh_latest_ohlcv(mocker, default_conf, caplog) -> None:
+    ohlcv = [
+        [
+            (arrow.utcnow().int_timestamp - 1) * 1000,  # unix timestamp ms
+            1,  # open
+            2,  # high
+            3,  # low
+            4,  # close
+            5,  # volume (in quote currency)
+        ],
+        [
+            arrow.utcnow().int_timestamp * 1000,  # unix timestamp ms
             3,  # open
             1,  # high
             4,  # low
@@ -1318,6 +1385,12 @@ def test_refresh_latest_ohlcv(mocker, default_conf, caplog) -> None:
     pairs = [('IOTA/ETH', '5m'), ('XRP/ETH', '5m')]
     # empty dicts
     assert not exchange._klines
+    exchange.refresh_latest_ohlcv(pairs, cache=False)
+    # No caching
+    assert not exchange._klines
+    assert exchange._api_async.fetch_ohlcv.call_count == 2
+    exchange._api_async.fetch_ohlcv.reset_mock()
+
     exchange.refresh_latest_ohlcv(pairs)
 
     assert log_has(f'Refreshing candle (OHLCV) data for {len(pairs)} pairs', caplog)
@@ -1348,7 +1421,7 @@ def test_refresh_latest_ohlcv(mocker, default_conf, caplog) -> None:
 async def test__async_get_candle_history(default_conf, mocker, caplog, exchange_name):
     ohlcv = [
         [
-            arrow.utcnow().timestamp * 1000,  # unix timestamp ms
+            arrow.utcnow().int_timestamp * 1000,  # unix timestamp ms
             1,  # open
             2,  # high
             3,  # low
@@ -1383,14 +1456,14 @@ async def test__async_get_candle_history(default_conf, mocker, caplog, exchange_
         api_mock.fetch_ohlcv = MagicMock(side_effect=ccxt.BaseError("Unknown error"))
         exchange = get_patched_exchange(mocker, default_conf, api_mock, id=exchange_name)
         await exchange._async_get_candle_history(pair, "5m",
-                                                 (arrow.utcnow().timestamp - 2000) * 1000)
+                                                 (arrow.utcnow().int_timestamp - 2000) * 1000)
 
     with pytest.raises(OperationalException, match=r'Exchange.* does not support fetching '
                                                    r'historical candle \(OHLCV\) data\..*'):
         api_mock.fetch_ohlcv = MagicMock(side_effect=ccxt.NotSupported("Not supported"))
         exchange = get_patched_exchange(mocker, default_conf, api_mock, id=exchange_name)
         await exchange._async_get_candle_history(pair, "5m",
-                                                 (arrow.utcnow().timestamp - 2000) * 1000)
+                                                 (arrow.utcnow().int_timestamp - 2000) * 1000)
 
 
 @pytest.mark.asyncio
@@ -1432,13 +1505,32 @@ def test_refresh_latest_ohlcv_inv_result(default_conf, mocker, caplog):
     assert exchange._klines
     assert exchange._api_async.fetch_ohlcv.call_count == 2
 
-    assert type(res) is list
-    assert len(res) == 2
+    assert type(res) is dict
+    assert len(res) == 1
     # Test that each is in list at least once as order is not guaranteed
-    assert type(res[0]) is tuple or type(res[1]) is tuple
-    assert type(res[0]) is TypeError or type(res[1]) is TypeError
     assert log_has("Error loading ETH/BTC. Result was [[]].", caplog)
     assert log_has("Async code raised an exception: TypeError", caplog)
+
+
+def test_get_next_limit_in_list():
+    limit_range = [5, 10, 20, 50, 100, 500, 1000]
+    assert Exchange.get_next_limit_in_list(1, limit_range) == 5
+    assert Exchange.get_next_limit_in_list(5, limit_range) == 5
+    assert Exchange.get_next_limit_in_list(6, limit_range) == 10
+    assert Exchange.get_next_limit_in_list(9, limit_range) == 10
+    assert Exchange.get_next_limit_in_list(10, limit_range) == 10
+    assert Exchange.get_next_limit_in_list(11, limit_range) == 20
+    assert Exchange.get_next_limit_in_list(19, limit_range) == 20
+    assert Exchange.get_next_limit_in_list(21, limit_range) == 50
+    assert Exchange.get_next_limit_in_list(51, limit_range) == 100
+    assert Exchange.get_next_limit_in_list(1000, limit_range) == 1000
+    # Going over the limit ...
+    assert Exchange.get_next_limit_in_list(1001, limit_range) == 1000
+    assert Exchange.get_next_limit_in_list(2000, limit_range) == 1000
+
+    assert Exchange.get_next_limit_in_list(21, None) == 21
+    assert Exchange.get_next_limit_in_list(100, None) == 100
+    assert Exchange.get_next_limit_in_list(1000, None) == 1000
 
 
 @pytest.mark.parametrize("exchange_name", EXCHANGES)
@@ -1453,6 +1545,19 @@ def test_fetch_l2_order_book(default_conf, mocker, order_book_l2, exchange_name)
     assert 'asks' in order_book
     assert len(order_book['bids']) == 10
     assert len(order_book['asks']) == 10
+    assert api_mock.fetch_l2_order_book.call_args_list[0][0][0] == 'ETH/BTC'
+
+    for val in [1, 5, 10, 12, 20, 50, 100]:
+        api_mock.fetch_l2_order_book.reset_mock()
+
+        order_book = exchange.fetch_l2_order_book(pair='ETH/BTC', limit=val)
+        assert api_mock.fetch_l2_order_book.call_args_list[0][0][0] == 'ETH/BTC'
+        # Not all exchanges support all limits for orderbook
+        if not exchange._ft_has['l2_limit_range'] or val in exchange._ft_has['l2_limit_range']:
+            assert api_mock.fetch_l2_order_book.call_args_list[0][0][1] == val
+        else:
+            next_limit = exchange.get_next_limit_in_list(val, exchange._ft_has['l2_limit_range'])
+            assert api_mock.fetch_l2_order_book.call_args_list[0][0][1] == next_limit
 
 
 @pytest.mark.parametrize("exchange_name", EXCHANGES)
@@ -1602,13 +1707,13 @@ async def test__async_fetch_trades(default_conf, mocker, caplog, exchange_name,
     with pytest.raises(OperationalException, match=r'Could not fetch trade data*'):
         api_mock.fetch_trades = MagicMock(side_effect=ccxt.BaseError("Unknown error"))
         exchange = get_patched_exchange(mocker, default_conf, api_mock, id=exchange_name)
-        await exchange._async_fetch_trades(pair, since=(arrow.utcnow().timestamp - 2000) * 1000)
+        await exchange._async_fetch_trades(pair, since=(arrow.utcnow().int_timestamp - 2000) * 1000)
 
     with pytest.raises(OperationalException, match=r'Exchange.* does not support fetching '
                                                    r'historical trade data\..*'):
         api_mock.fetch_trades = MagicMock(side_effect=ccxt.NotSupported("Not supported"))
         exchange = get_patched_exchange(mocker, default_conf, api_mock, id=exchange_name)
-        await exchange._async_fetch_trades(pair, since=(arrow.utcnow().timestamp - 2000) * 1000)
+        await exchange._async_fetch_trades(pair, since=(arrow.utcnow().int_timestamp - 2000) * 1000)
 
 
 @pytest.mark.asyncio
@@ -2048,7 +2153,7 @@ def test_get_fee(default_conf, mocker, exchange_name):
 
 
 def test_stoploss_order_unsupported_exchange(default_conf, mocker):
-    exchange = get_patched_exchange(mocker, default_conf, 'bittrex')
+    exchange = get_patched_exchange(mocker, default_conf, id='bittrex')
     with pytest.raises(OperationalException, match=r"stoploss is not implemented .*"):
         exchange.stoploss(pair='ETH/BTC', amount=1, stop_price=220, order_types={})
 
@@ -2251,6 +2356,9 @@ def test_timeframe_to_next_date():
 
     date = datetime.now(tz=timezone.utc)
     assert timeframe_to_next_date("5m") > date
+
+    date = datetime(2019, 8, 12, 13, 30, 0, tzinfo=timezone.utc)
+    assert timeframe_to_next_date("5m", date) == date + timedelta(minutes=5)
 
 
 @pytest.mark.parametrize("market_symbol,base,quote,exchange,add_dict,expected_result", [

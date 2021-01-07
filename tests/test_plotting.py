@@ -13,13 +13,10 @@ from freqtrade.configuration import TimeRange
 from freqtrade.data import history
 from freqtrade.data.btanalysis import create_cum_profit, load_backtest_data
 from freqtrade.exceptions import OperationalException
-from freqtrade.plot.plotting import (add_indicators, add_profit,
-                                     create_plotconfig,
-                                     generate_candlestick_graph,
-                                     generate_plot_filename,
-                                     generate_profit_graph, init_plotscript,
-                                     load_and_plot_trades, plot_profit,
-                                     plot_trades, store_plot_file)
+from freqtrade.plot.plotting import (add_areas, add_indicators, add_profit, create_plotconfig,
+                                     generate_candlestick_graph, generate_plot_filename,
+                                     generate_profit_graph, init_plotscript, load_and_plot_trades,
+                                     plot_profit, plot_trades, store_plot_file)
 from freqtrade.resolvers import StrategyResolver
 from tests.conftest import get_args, log_has, log_has_re, patch_exchange
 
@@ -54,9 +51,10 @@ def test_init_plotscript(default_conf, mocker, testdatadir):
     assert "ohlcv" in ret
     assert "trades" in ret
     assert "pairs" in ret
+    assert 'timerange' in ret
 
     default_conf['pairs'] = ["TRX/BTC", "ADA/BTC"]
-    ret = init_plotscript(default_conf)
+    ret = init_plotscript(default_conf, 20)
     assert "ohlcv" in ret
     assert "TRX/BTC" in ret["ohlcv"]
     assert "ADA/BTC" in ret["ohlcv"]
@@ -96,6 +94,62 @@ def test_add_indicators(default_conf, testdatadir, caplog):
     fig3 = add_indicators(fig=deepcopy(fig), row=3, indicators={'no_indicator': {}}, data=data)
     assert fig == fig3
     assert log_has_re(r'Indicator "no_indicator" ignored\..*', caplog)
+
+
+def test_add_areas(default_conf, testdatadir, caplog):
+    pair = "UNITTEST/BTC"
+    timerange = TimeRange(None, 'line', 0, -1000)
+
+    data = history.load_pair_history(pair=pair, timeframe='1m',
+                                     datadir=testdatadir, timerange=timerange)
+    indicators = {"macd": {"color": "red",
+                           "fill_color": "black",
+                           "fill_to": "macdhist",
+                           "fill_label": "MACD Fill"}}
+
+    ind_no_label = {"macd": {"fill_color": "red",
+                             "fill_to": "macdhist"}}
+
+    ind_plain = {"macd": {"fill_to": "macdhist"}}
+    default_conf.update({'strategy': 'DefaultStrategy'})
+    strategy = StrategyResolver.load_strategy(default_conf)
+
+    # Generate buy/sell signals and indicators
+    data = strategy.analyze_ticker(data, {'pair': pair})
+    fig = generate_empty_figure()
+
+    # indicator mentioned in fill_to does not exist
+    fig1 = add_areas(fig, 1, data, {'ema10': {'fill_to': 'no_fill_indicator'}})
+    assert fig == fig1
+    assert log_has_re(r'fill_to: "no_fill_indicator" ignored\..*', caplog)
+
+    # indicator does not exist
+    fig2 = add_areas(fig, 1, data, {'no_indicator': {'fill_to': 'ema10'}})
+    assert fig == fig2
+    assert log_has_re(r'Indicator "no_indicator" ignored\..*', caplog)
+
+    # everythin given in plot config, row 3
+    fig3 = add_areas(fig, 3, data, indicators)
+    figure = fig3.layout.figure
+    fill_macd = find_trace_in_fig_data(figure.data, "MACD Fill")
+    assert isinstance(fill_macd, go.Scatter)
+    assert fill_macd.yaxis == "y3"
+    assert fill_macd.fillcolor == "black"
+
+    # label missing, row 1
+    fig4 = add_areas(fig, 1, data, ind_no_label)
+    figure = fig4.layout.figure
+    fill_macd = find_trace_in_fig_data(figure.data, "macd<>macdhist")
+    assert isinstance(fill_macd, go.Scatter)
+    assert fill_macd.yaxis == "y"
+    assert fill_macd.fillcolor == "red"
+
+    # fit_to only
+    fig5 = add_areas(fig, 1, data, ind_plain)
+    figure = fig5.layout.figure
+    fill_macd = find_trace_in_fig_data(figure.data, "macd<>macdhist")
+    assert isinstance(fill_macd, go.Scatter)
+    assert fill_macd.yaxis == "y"
 
 
 def test_plot_trades(testdatadir, caplog):
@@ -298,6 +352,10 @@ def test_generate_profit_graph(testdatadir):
     for pair in pairs:
         profit_pair = find_trace_in_fig_data(figure.data, f"Profit {pair}")
         assert isinstance(profit_pair, go.Scatter)
+
+    with pytest.raises(OperationalException, match=r"No trades found.*"):
+        # Pair cannot be empty - so it's an empty dataframe.
+        generate_profit_graph(pairs, data, trades.loc[trades['pair'].isnull()], timeframe="5m")
 
 
 def test_start_plot_dataframe(mocker):

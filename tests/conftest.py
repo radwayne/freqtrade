@@ -13,23 +13,37 @@ import numpy as np
 import pytest
 from telegram import Chat, Message, Update
 
-from freqtrade import constants, persistence
+from freqtrade import constants
 from freqtrade.commands import Arguments
 from freqtrade.data.converter import ohlcv_to_dataframe
 from freqtrade.edge import Edge, PairInfo
 from freqtrade.exchange import Exchange
 from freqtrade.freqtradebot import FreqtradeBot
-from freqtrade.persistence import Trade
+from freqtrade.persistence import Trade, init_db
 from freqtrade.resolvers import ExchangeResolver
 from freqtrade.worker import Worker
-from tests.conftest_trades import (mock_trade_1, mock_trade_2, mock_trade_3,
-                                   mock_trade_4, mock_trade_5, mock_trade_6)
+from tests.conftest_trades import (mock_trade_1, mock_trade_2, mock_trade_3, mock_trade_4,
+                                   mock_trade_5, mock_trade_6)
+
 
 logging.getLogger('').setLevel(logging.INFO)
 
 
 # Do not mask numpy errors as warnings that no one read, raise the exсeption
 np.seterr(all='raise')
+
+
+def pytest_addoption(parser):
+    parser.addoption('--longrun', action='store_true', dest="longrun",
+                     default=False, help="Enable long-run tests (ccxt compat)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "longrun: mark test that is running slowly and should not be run regularily"
+    )
+    if not config.option.longrun:
+        setattr(config.option, 'markexpr', 'not longrun')
 
 
 def log_has(line, logs):
@@ -130,7 +144,7 @@ def patch_freqtradebot(mocker, config) -> None:
     :return: None
     """
     mocker.patch('freqtrade.freqtradebot.RPCManager', MagicMock())
-    persistence.init(config['db_url'])
+    init_db(config['db_url'])
     patch_exchange(mocker)
     mocker.patch('freqtrade.freqtradebot.RPCManager._init', MagicMock())
     mocker.patch('freqtrade.freqtradebot.RPCManager.send_msg', MagicMock())
@@ -145,6 +159,7 @@ def get_patched_freqtradebot(mocker, config) -> FreqtradeBot:
     :return: FreqtradeBot
     """
     patch_freqtradebot(mocker, config)
+    config['datadir'] = Path(config['datadir'])
     return FreqtradeBot(config)
 
 
@@ -217,11 +232,15 @@ def patch_coingekko(mocker) -> None:
 
 @pytest.fixture(scope='function')
 def init_persistence(default_conf):
-    persistence.init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
 
 
 @pytest.fixture(scope="function")
 def default_conf(testdatadir):
+    return get_default_conf(testdatadir)
+
+
+def get_default_conf(testdatadir):
     """ Returns validated configuration suitable for most tests """
     configuration = {
         "max_open_trades": 1,
@@ -295,7 +314,7 @@ def default_conf(testdatadir):
 @pytest.fixture
 def update():
     _update = Update(0)
-    _update.message = Message(0, 0, datetime.utcnow(), Chat(0, 0))
+    _update.message = Message(0, datetime.utcnow(), Chat(0, 0))
     return _update
 
 
@@ -790,7 +809,7 @@ def limit_buy_order_open():
         'side': 'buy',
         'symbol': 'mocked',
         'datetime': arrow.utcnow().isoformat(),
-        'timestamp': arrow.utcnow().timestamp,
+        'timestamp': arrow.utcnow().int_timestamp,
         'price': 0.00001099,
         'amount': 90.99181073,
         'filled': 0.0,
@@ -909,7 +928,7 @@ def limit_buy_order_canceled_empty(request):
             'info': {},
             'id': '1234512345',
             'clientOrderId': None,
-            'timestamp': arrow.utcnow().shift(minutes=-601).timestamp,
+            'timestamp': arrow.utcnow().shift(minutes=-601).int_timestamp,
             'datetime': arrow.utcnow().shift(minutes=-601).isoformat(),
             'lastTradeTimestamp': None,
             'symbol': 'LTC/USDT',
@@ -930,7 +949,7 @@ def limit_buy_order_canceled_empty(request):
             'info': {},
             'id': 'AZNPFF-4AC4N-7MKTAT',
             'clientOrderId': None,
-            'timestamp': arrow.utcnow().shift(minutes=-601).timestamp,
+            'timestamp': arrow.utcnow().shift(minutes=-601).int_timestamp,
             'datetime': arrow.utcnow().shift(minutes=-601).isoformat(),
             'lastTradeTimestamp': None,
             'status': 'canceled',
@@ -951,7 +970,7 @@ def limit_buy_order_canceled_empty(request):
             'info': {},
             'id': '1234512345',
             'clientOrderId': 'alb1234123',
-            'timestamp': arrow.utcnow().shift(minutes=-601).timestamp,
+            'timestamp': arrow.utcnow().shift(minutes=-601).int_timestamp,
             'datetime': arrow.utcnow().shift(minutes=-601).isoformat(),
             'lastTradeTimestamp': None,
             'symbol': 'LTC/USDT',
@@ -972,7 +991,7 @@ def limit_buy_order_canceled_empty(request):
             'info': {},
             'id': '1234512345',
             'clientOrderId': 'alb1234123',
-            'timestamp': arrow.utcnow().shift(minutes=-601).timestamp,
+            'timestamp': arrow.utcnow().shift(minutes=-601).int_timestamp,
             'datetime': arrow.utcnow().shift(minutes=-601).isoformat(),
             'lastTradeTimestamp': None,
             'symbol': 'LTC/USDT',
@@ -998,7 +1017,7 @@ def limit_sell_order_open():
         'side': 'sell',
         'pair': 'mocked',
         'datetime': arrow.utcnow().isoformat(),
-        'timestamp': arrow.utcnow().timestamp,
+        'timestamp': arrow.utcnow().int_timestamp,
         'price': 0.00001173,
         'amount': 90.99181073,
         'filled': 0.0,
@@ -1082,7 +1101,7 @@ def ohlcv_history_list():
 @pytest.fixture
 def ohlcv_history(ohlcv_history_list):
     return ohlcv_to_dataframe(ohlcv_history_list, "5m", pair="UNITTEST/BTC",
-                              fill_missing=True)
+                              fill_missing=True, drop_incomplete=False)
 
 
 @pytest.fixture
@@ -1586,16 +1605,7 @@ def fetch_trades_result():
 
 @pytest.fixture(scope="function")
 def trades_for_order2():
-    return [{'info': {'id': 34567,
-                      'orderId': 123456,
-                      'price': '0.24544100',
-                      'qty': '8.00000000',
-                      'commission': '0.00800000',
-                      'commissionAsset': 'LTC',
-                      'time': 1521663363189,
-                      'isBuyer': True,
-                      'isMaker': False,
-                      'isBestMatch': True},
+    return [{'info': {},
              'timestamp': 1521663363189,
              'datetime': '2018-03-21T20:16:03.189Z',
              'symbol': 'LTC/ETH',
@@ -1607,16 +1617,7 @@ def trades_for_order2():
              'cost': 1.963528,
              'amount': 4.0,
              'fee': {'cost': 0.004, 'currency': 'LTC'}},
-            {'info': {'id': 34567,
-                      'orderId': 123456,
-                      'price': '0.24544100',
-                      'qty': '8.00000000',
-                      'commission': '0.00800000',
-                      'commissionAsset': 'LTC',
-                      'time': 1521663363189,
-                      'isBuyer': True,
-                      'isMaker': False,
-                      'isBestMatch': True},
+            {'info': {},
              'timestamp': 1521663363189,
              'datetime': '2018-03-21T20:16:03.189Z',
              'symbol': 'LTC/ETH',
@@ -1628,6 +1629,14 @@ def trades_for_order2():
              'cost': 1.963528,
              'amount': 4.0,
              'fee': {'cost': 0.004, 'currency': 'LTC'}}]
+
+
+@pytest.fixture(scope="function")
+def trades_for_order3(trades_for_order2):
+    # Different fee currencies for each trade
+    trades_for_order = deepcopy(trades_for_order2)
+    trades_for_order[0]['fee'] = {'cost': 0.02, 'currency': 'BNB'}
+    return trades_for_order
 
 
 @pytest.fixture

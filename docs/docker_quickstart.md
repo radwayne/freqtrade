@@ -29,7 +29,7 @@ Create a new directory and place the [docker-compose file](https://github.com/fr
     mkdir ft_userdata
     cd ft_userdata/
     # Download the docker-compose file from the repository
-    curl https://raw.githubusercontent.com/freqtrade/freqtrade/master/docker-compose.yml -o docker-compose.yml
+    curl https://raw.githubusercontent.com/freqtrade/freqtrade/stable/docker-compose.yml -o docker-compose.yml
 
     # Pull the freqtrade image
     docker-compose pull
@@ -46,7 +46,7 @@ Create a new directory and place the [docker-compose file](https://github.com/fr
     mkdir ft_userdata
     cd ft_userdata/
     # Download the docker-compose file from the repository
-    curl https://raw.githubusercontent.com/freqtrade/freqtrade/master/docker-compose.yml -o docker-compose.yml
+    curl https://raw.githubusercontent.com/freqtrade/freqtrade/stable/docker-compose.yml -o docker-compose.yml
 
     # Pull the freqtrade image
     docker-compose pull
@@ -61,7 +61,7 @@ Create a new directory and place the [docker-compose file](https://github.com/fr
     !!! Note "Change your docker Image"
         You have to change the docker image in the docker-compose file for your Raspberry build to work properly.
         ``` yml
-        image: freqtradeorg/freqtrade:master_pi
+        image: freqtradeorg/freqtrade:stable_pi
         # image: freqtradeorg/freqtrade:develop_pi
         ```
 
@@ -123,7 +123,7 @@ Advanced users may edit the docker-compose file further to include all possible 
 All possible freqtrade arguments will be available by running `docker-compose run --rm freqtrade <command> <optional arguments>`.
 
 !!! Note "`docker-compose run --rm`"
-    Including `--rm` will clean up the container after completion, and is highly recommended for all modes except trading mode (running with `freqtrade trade` command).
+    Including `--rm` will remove the container after completion, and is highly recommended for all modes except trading mode (running with `freqtrade trade` command).
 
 #### Example: Download data with docker-compose
 
@@ -172,19 +172,19 @@ docker-compose run --rm freqtrade plot-dataframe --strategy AwesomeStrategy -p B
 
 The output will be stored in the `user_data/plot` directory, and can be opened with any modern browser.
 
-## Data analayis using docker compose
+## Data analysis using docker compose
 
 Freqtrade provides a docker-compose file which starts up a jupyter lab server.
 You can run this server using the following command:
 
 ``` bash
-docker-compose --rm -f docker/docker-compose-jupyter.yml up
+docker-compose -f docker/docker-compose-jupyter.yml up
 ```
 
-This will create a dockercontainer running jupyter lab, which will be accessible using `https://127.0.0.1:8888/lab`.
+This will create a docker-container running jupyter lab, which will be accessible using `https://127.0.0.1:8888/lab`.
 Please use the link that's printed in the console after startup for simplified login.
 
-Since part of this image is built on your machine, it is recommended to rebuild the image from time to time to keep freqtrade (and dependencies) uptodate.
+Since part of this image is built on your machine, it is recommended to rebuild the image from time to time to keep freqtrade (and dependencies) up-to-date.
 
 ``` bash
 docker-compose -f docker/docker-compose-jupyter.yml build --no-cache

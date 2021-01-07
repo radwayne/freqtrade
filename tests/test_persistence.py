@@ -8,13 +8,13 @@ from sqlalchemy import create_engine
 
 from freqtrade import constants
 from freqtrade.exceptions import DependencyException, OperationalException
-from freqtrade.persistence import Order, Trade, clean_dry_run_db, init
+from freqtrade.persistence import Order, Trade, clean_dry_run_db, init_db
 from tests.conftest import create_mock_trades, log_has, log_has_re
 
 
 def test_init_create_session(default_conf):
     # Check if init create a session
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
     assert hasattr(Trade, 'session')
     assert 'scoped_session' in type(Trade.session).__name__
 
@@ -24,7 +24,7 @@ def test_init_custom_db_url(default_conf, mocker):
     default_conf.update({'db_url': 'sqlite:///tmp/freqtrade2_test.sqlite'})
     create_engine_mock = mocker.patch('freqtrade.persistence.models.create_engine', MagicMock())
 
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
     assert create_engine_mock.call_count == 1
     assert create_engine_mock.mock_calls[0][1][0] == 'sqlite:///tmp/freqtrade2_test.sqlite'
 
@@ -33,7 +33,7 @@ def test_init_invalid_db_url(default_conf):
     # Update path to a value other than default, but still in-memory
     default_conf.update({'db_url': 'unknown:///some.url'})
     with pytest.raises(OperationalException, match=r'.*no valid database URL*'):
-        init(default_conf['db_url'], default_conf['dry_run'])
+        init_db(default_conf['db_url'], default_conf['dry_run'])
 
 
 def test_init_prod_db(default_conf, mocker):
@@ -42,7 +42,7 @@ def test_init_prod_db(default_conf, mocker):
 
     create_engine_mock = mocker.patch('freqtrade.persistence.models.create_engine', MagicMock())
 
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
     assert create_engine_mock.call_count == 1
     assert create_engine_mock.mock_calls[0][1][0] == 'sqlite:///tradesv3.sqlite'
 
@@ -53,7 +53,7 @@ def test_init_dryrun_db(default_conf, mocker):
 
     create_engine_mock = mocker.patch('freqtrade.persistence.models.create_engine', MagicMock())
 
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
     assert create_engine_mock.call_count == 1
     assert create_engine_mock.mock_calls[0][1][0] == 'sqlite:///tradesv3.dryrun.sqlite'
 
@@ -177,10 +177,10 @@ def test_calc_open_close_trade_price(limit_buy_order, limit_sell_order, fee):
 
     trade.open_order_id = 'something'
     trade.update(limit_buy_order)
-    assert trade._calc_open_trade_price() == 0.0010024999999225068
+    assert trade._calc_open_trade_value() == 0.0010024999999225068
 
     trade.update(limit_sell_order)
-    assert trade.calc_close_trade_price() == 0.0010646656050132426
+    assert trade.calc_close_trade_value() == 0.0010646656050132426
 
     # Profit in BTC
     assert trade.calc_profit() == 0.00006217
@@ -233,7 +233,7 @@ def test_calc_close_trade_price_exception(limit_buy_order, fee):
 
     trade.open_order_id = 'something'
     trade.update(limit_buy_order)
-    assert trade.calc_close_trade_price() == 0.0
+    assert trade.calc_close_trade_value() == 0.0
 
 
 @pytest.mark.usefixtures("init_persistence")
@@ -277,7 +277,7 @@ def test_update_invalid_order(limit_buy_order):
 
 
 @pytest.mark.usefixtures("init_persistence")
-def test_calc_open_trade_price(limit_buy_order, fee):
+def test_calc_open_trade_value(limit_buy_order, fee):
     trade = Trade(
         pair='ETH/BTC',
         stake_amount=0.001,
@@ -291,10 +291,10 @@ def test_calc_open_trade_price(limit_buy_order, fee):
     trade.update(limit_buy_order)  # Buy @ 0.00001099
 
     # Get the open rate price with the standard fee rate
-    assert trade._calc_open_trade_price() == 0.0010024999999225068
+    assert trade._calc_open_trade_value() == 0.0010024999999225068
     trade.fee_open = 0.003
     # Get the open rate price with a custom fee rate
-    assert trade._calc_open_trade_price() == 0.001002999999922468
+    assert trade._calc_open_trade_value() == 0.001002999999922468
 
 
 @pytest.mark.usefixtures("init_persistence")
@@ -312,14 +312,14 @@ def test_calc_close_trade_price(limit_buy_order, limit_sell_order, fee):
     trade.update(limit_buy_order)  # Buy @ 0.00001099
 
     # Get the close rate price with a custom close rate and a regular fee rate
-    assert trade.calc_close_trade_price(rate=0.00001234) == 0.0011200318470471794
+    assert trade.calc_close_trade_value(rate=0.00001234) == 0.0011200318470471794
 
     # Get the close rate price with a custom close rate and a custom fee rate
-    assert trade.calc_close_trade_price(rate=0.00001234, fee=0.003) == 0.0011194704275749754
+    assert trade.calc_close_trade_value(rate=0.00001234, fee=0.003) == 0.0011194704275749754
 
     # Test when we apply a Sell order, and ask price with a custom fee rate
     trade.update(limit_sell_order)
-    assert trade.calc_close_trade_price(fee=0.005) == 0.0010619972701635854
+    assert trade.calc_close_trade_value(fee=0.005) == 0.0010619972701635854
 
 
 @pytest.mark.usefixtures("init_persistence")
@@ -482,7 +482,7 @@ def test_migrate_old(mocker, default_conf, fee):
     engine.execute(insert_table_old)
     engine.execute(insert_table_old2)
     # Run init to test migration
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
 
     assert len(Trade.query.filter(Trade.id == 1).all()) == 1
     trade = Trade.query.filter(Trade.id == 1).first()
@@ -499,7 +499,7 @@ def test_migrate_old(mocker, default_conf, fee):
     assert trade.max_rate == 0.0
     assert trade.stop_loss == 0.0
     assert trade.initial_stop_loss == 0.0
-    assert trade.open_trade_price == trade._calc_open_trade_price()
+    assert trade.open_trade_value == trade._calc_open_trade_value()
     assert trade.close_profit_abs is None
     assert trade.fee_open_cost is None
     assert trade.fee_open_currency is None
@@ -581,7 +581,7 @@ def test_migrate_new(mocker, default_conf, fee, caplog):
 
     engine.execute("create table trades_bak1 as select * from trades")
     # Run init to test migration
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
 
     assert len(Trade.query.filter(Trade.id == 1).all()) == 1
     trade = Trade.query.filter(Trade.id == 1).first()
@@ -607,7 +607,7 @@ def test_migrate_new(mocker, default_conf, fee, caplog):
     assert log_has("trying trades_bak1", caplog)
     assert log_has("trying trades_bak2", caplog)
     assert log_has("Running database migration for trades - backup: trades_bak2", caplog)
-    assert trade.open_trade_price == trade._calc_open_trade_price()
+    assert trade.open_trade_value == trade._calc_open_trade_value()
     assert trade.close_profit_abs is None
 
     assert log_has("Moving open orders to Orders table.", caplog)
@@ -661,7 +661,7 @@ def test_migrate_mid_state(mocker, default_conf, fee, caplog):
     engine.execute(insert_table_old)
 
     # Run init to test migration
-    init(default_conf['db_url'], default_conf['dry_run'])
+    init_db(default_conf['db_url'], default_conf['dry_run'])
 
     assert len(Trade.query.filter(Trade.id == 1).all()) == 1
     trade = Trade.query.filter(Trade.id == 1).first()
@@ -677,7 +677,7 @@ def test_migrate_mid_state(mocker, default_conf, fee, caplog):
     assert trade.max_rate == 0.0
     assert trade.stop_loss == 0.0
     assert trade.initial_stop_loss == 0.0
-    assert trade.open_trade_price == trade._calc_open_trade_price()
+    assert trade.open_trade_value == trade._calc_open_trade_value()
     assert log_has("trying trades_bak0", caplog)
     assert log_has("Running database migration for trades - backup: trades_bak0", caplog)
 
@@ -803,7 +803,7 @@ def test_to_json(default_conf, fee):
                       'close_timestamp': None,
                       'open_rate': 0.123,
                       'open_rate_requested': None,
-                      'open_trade_price': 15.1668225,
+                      'open_trade_value': 15.1668225,
                       'fee_close': 0.0025,
                       'fee_close_cost': None,
                       'fee_close_currency': None,
@@ -816,24 +816,25 @@ def test_to_json(default_conf, fee):
                       'amount_requested': 123.0,
                       'stake_amount': 0.001,
                       'close_profit': None,
+                      'close_profit_pct': None,
                       'close_profit_abs': None,
+                      'profit_ratio': None,
+                      'profit_pct': None,
+                      'profit_abs': None,
                       'sell_reason': None,
                       'sell_order_status': None,
-                      'stop_loss': None,
                       'stop_loss_abs': None,
                       'stop_loss_ratio': None,
                       'stop_loss_pct': None,
                       'stoploss_order_id': None,
                       'stoploss_last_update': None,
                       'stoploss_last_update_timestamp': None,
-                      'initial_stop_loss': None,
                       'initial_stop_loss_abs': None,
                       'initial_stop_loss_pct': None,
                       'initial_stop_loss_ratio': None,
                       'min_rate': None,
                       'max_rate': None,
                       'strategy': None,
-                      'ticker_interval': None,
                       'timeframe': None,
                       'exchange': 'bittrex',
                       }
@@ -868,19 +869,21 @@ def test_to_json(default_conf, fee):
                       'amount': 100.0,
                       'amount_requested': 101.0,
                       'stake_amount': 0.001,
-                      'stop_loss': None,
                       'stop_loss_abs': None,
                       'stop_loss_pct': None,
                       'stop_loss_ratio': None,
                       'stoploss_order_id': None,
                       'stoploss_last_update': None,
                       'stoploss_last_update_timestamp': None,
-                      'initial_stop_loss': None,
                       'initial_stop_loss_abs': None,
                       'initial_stop_loss_pct': None,
                       'initial_stop_loss_ratio': None,
                       'close_profit': None,
+                      'close_profit_pct': None,
                       'close_profit_abs': None,
+                      'profit_ratio': None,
+                      'profit_pct': None,
+                      'profit_abs': None,
                       'close_rate_requested': None,
                       'fee_close': 0.0025,
                       'fee_close_cost': None,
@@ -893,18 +896,17 @@ def test_to_json(default_conf, fee):
                       'min_rate': None,
                       'open_order_id': None,
                       'open_rate_requested': None,
-                      'open_trade_price': 12.33075,
+                      'open_trade_value': 12.33075,
                       'sell_reason': None,
                       'sell_order_status': None,
                       'strategy': None,
-                      'ticker_interval': None,
                       'timeframe': None,
                       'exchange': 'bittrex',
                       }
 
 
 def test_stoploss_reinitialization(default_conf, fee):
-    init(default_conf['db_url'])
+    init_db(default_conf['db_url'])
     trade = Trade(
         pair='ETH/BTC',
         stake_amount=0.001,
